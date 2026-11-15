@@ -32,7 +32,7 @@ chatbot:
 
 <audio controls src="./samples/talk2myself.mp3"></audio>
 
-**[samples/father_daughter_piano.mp3](./samples/father_daughter_piano.mp3)**:父亲和女儿因为弹琴的事吵架(约 6 分 47 秒),走 WebRTC 通话。
+**[samples/father_daughter_piano.mp3](./samples/father_daughter_piano.mp3)**:父亲和女儿因为弹琴的事吵架(约 6 分 47 秒),走 WebRTC 通话。 【延迟中位数870ms】
 
 <audio controls src="./samples/father_daughter_piano.mp3"></audio>
 
