@@ -22,7 +22,7 @@ chatbot:
 
 ### 🎧 听一段
 
-两段会话录音,都是 16 kHz 双声道 mp3:**左声道是用户麦克风,右声道是 bot 播放的声音**,戴耳机听左右分得最清楚。
+几段会话录音,都是 16 kHz 双声道 mp3:**左声道是用户麦克风,右声道是 bot 播放的声音**,戴耳机听左右分得最清楚。
 
 **[samples/simple.mp3](./samples/simple.mp3)**:一段普通的 chatbot 对话(约 1 分 38 秒)。
 
@@ -31,6 +31,10 @@ chatbot:
 **[samples/talk2myself.mp3](./samples/talk2myself.mp3)**:和自己聊天(约 5 分 21 秒)。bot 用的是我用[声音复刻](#声音复刻页面)训练出来的我自己的声音,走 WebRTC 通话。
 
 <audio controls src="./samples/talk2myself.mp3"></audio>
+
+**[samples/father_daughter_piano.mp3](./samples/father_daughter_piano.mp3)**:父亲和女儿因为弹琴的事吵架(约 6 分 47 秒),走 WebRTC 通话。
+
+<audio controls src="./samples/father_daughter_piano.mp3"></audio>
 
 > GitHub 页面不能直接播放音频,点上面的链接进去下载即可。录音由 `DualChannelRecorder`(`app/audio/recorder.py`)生成,通话时默认开启,原始 wav 保存在 `output/recordings/`。
 

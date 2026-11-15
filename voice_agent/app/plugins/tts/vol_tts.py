@@ -66,6 +66,7 @@ class VolTTS:
             "req_params": {
                 "text": text,
                 "speaker": self.speaker,
+                "speech_rate":150,
                 # 直接取 16-bit 小端 PCM，省去 mp3 解码
                 "audio_params": {"format": "pcm", "sample_rate": self._sample_rate},
             },
