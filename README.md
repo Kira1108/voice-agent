@@ -434,6 +434,27 @@ UserUtteranceAggregator             状态(bot 忙不忙、在思考还是在说
 
 详细说明见 [turn/docs/README.md](project/app/plugins/turn/docs/README.md)。
 
+### 对话上下文(`app/context/`)
+
+对话历史**只记用户实际听到的**。LLM 生成完一整段回复,但 bot 说到一半被打断的话,没播出去的部分不进历史,模型下一轮就不会以为自己说完了。历史不再由 LLM(pydantic-ai)自己管,而是单独一个 `ConversationContext`:
+
+```
+LLM 收到一轮 ──────────────── 用户消息 ───────────┐
+LLM 生成完 ─────────────────  回复(暂存)─────────┤
+TTS:每句第一块音频带上这句的文字(AudioFrame.text)  ▼
+transport:记每句播了多少 ── 播完 / 被打断 ──▶ BotSpokeFrame ──▶ ConversationContext ──▶ 下一轮 LLM 只读
+```
+
+- **谁知道播了多少**:只有 transport。WebRTC 由服务端逐帧播出,精确到 20ms;WebSocket 按播放时间估算。播放记账在 `app/transport/spoken.py`,两个 transport 共用。一轮结束(播完或被打断)时,通过 controller 发出 `BotSpokeFrame`:每句话和它被播出的比例。WebRTC 页面上也会显示"实际说的"和"被打断,听到 n/m 句"。
+- **在页面上看**:context 每次变化(用户这一轮进来、回复生成完、播放结果回来)都会发一个 `ConversationFrame`,带上完整历史,WebRTC 页面在"对话历史"里显示成聊天记录:就是大模型下一轮看到的内容,生成了但没播出去的部分划掉显示。翻译模式没有对话历史,不显示这一栏。
+- **记成什么**:被打断的回复只保留**完整听到的句子**,后面加"（被打断）"。一个 TTS 片段里有好几句时(LLM 吐得快,几句一起送去合成),按字数比例拆开算。可以改成连半句一起截(`ConversationContext(partial="cut")`,截断处加"…")。一句都没听到就不记回复,前后两轮用户的话合并成一条,保证用户 / 助手交替(Gemma 等模型的模板要求交替)。
+- **兜底**:transport 没报告的话(比如某个 transport 不支持,或 TTS 没标句子,如 `VolTTS2`),就用生成的全文,和以前一样。所以默认开启也不会比以前差。
+- **思考阶段被打断**:`BargeInAggregator` 会把上一轮重新放回草稿、和新的一句合并。context 发现新一轮以上一轮没被回答的话开头,就替换掉它,同一句话不会出现两次。
+- **上限**:默认最多保留 50 轮(`max_turns`)。
+- **pydantic-ai 的坑**:自己传 `message_history` 时,`Agent(system_prompt=...)` 不会被加进请求(会丢)。所以 `NaiveAgentRunner` 改用 `instructions=`,每次都会带上。
+
+用法:`NaiveAgentComponent` 默认就带一个 context,不用改。要配置就传 `NaiveAgentComponent(model=..., context=ConversationContext(max_turns=20, partial="cut"))`;要退回旧行为(生成多少记多少)传 `context=False`。翻译、变声不用 LLM 对话,不受影响。
+
 ### STT(`app/plugins/stt/`)
 
 - **整句 STT**(`VADAccumulator` + `Qwen3STTComponent`):VAD 按 Silero 的状态把音频攒成一整句,再交给 Qwen3 识别。VAD 会额外保留说话前 0.3 秒的音频(`pre_roll_secs`),不然第一个字会被切掉("闭嘴"会被识别成"嘴")。
@@ -522,6 +543,7 @@ project/app/
     turn/       轮次管理:半双工、"闭嘴"、smart turn、插话打断;docs/ 里有图解说明
   pipeline/     组件基类和 Pipeline
   metrics/      每轮延迟拆解(latency.py):说完 → 听到第一个字
+  context/      对话上下文(conversation.py):只记用户实际听到的回复
   control/      会话级控制总线(停止、打断、用户/bot 说话状态等事件)
   frame/        数据帧和事件定义
   routers/      WebSocket 接口
@@ -536,4 +558,4 @@ project/tests/              测试(python -m pytest)
 ## 已知问题
 
 - **播放结束时间是服务端估算的**:客户端缓冲很深时,可以调大 `TransportOutput` 的 `playback_margin_secs`。要精确的话,可以让客户端播完后回传事件。
-- **对话历史没有上限**:聊得越久,每轮发给 LLM 的内容越多,延迟会变高。
+- **对话历史上限是按轮数算的**:默认最多 50 轮(`ConversationContext(max_turns=...)`),没有按 token 数控制;单轮很长时可以调小。

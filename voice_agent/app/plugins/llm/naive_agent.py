@@ -3,6 +3,7 @@ from typing import AsyncGenerator
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
+from app.context import ConversationContext
 from app.frame import InterruptFrame, StopFrame, TextFrame, TextStreamFrame
 from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
@@ -41,15 +42,24 @@ class NaiveAgentRunner:
             system_prompt: str = SYSTEM_PROMPT):
         
         model = model if model else open_router_model()
-        self.agent = Agent(model=model, system_prompt=system_prompt)
+        # instructions, not system_prompt: pydantic-ai drops system_prompt when a message_history is passed in
+        self.agent = Agent(model=model, instructions=system_prompt)
         self.message_history = None
 
-    async def stream(self, text: str) -> AsyncGenerator[str, None]:
-        async with self.agent.run_stream(text, message_history=self.message_history) as result:
+    async def stream(self, text: str, message_history: list | None = None) -> AsyncGenerator[str, None]:
+        """Stream the reply to `text`.
+
+        message_history: the conversation so far, kept by the caller (app/context); nothing is remembered here.
+        None: the runner keeps the history itself, every generated reply in full, heard or not.
+        """
+        own_history = message_history is None
+        history = self.message_history if own_history else message_history
+        async with self.agent.run_stream(text, message_history=history or None) as result:
             async for message in result.stream_text(delta=True):
                 yield message
             # only a fully streamed turn is remembered; an aborted one leaves the history as it was
-            self.message_history = result.all_messages()
+            if own_history:
+                self.message_history = result.all_messages()
 
     def reset(self):
         self.message_history = None
@@ -58,6 +68,10 @@ class NaiveAgentComponent(PipelineComponent):
     """Handles each incoming TextFrame using the NaiveAgent.
 
     Pass `model` / `system_prompt` to configure the agent; `runner` replaces it entirely (e.g. a fake in tests).
+
+    The conversation history is a ConversationContext (app/context): it remembers what the user actually heard
+    of each reply, as reported by the transport. Pass your own to configure it, or `context=False` for the
+    runner to remember every generated reply in full.
     """
 
     control_frames = (StopFrame, InterruptFrame)
@@ -66,12 +80,22 @@ class NaiveAgentComponent(PipelineComponent):
             model: Model | None = None,
             system_prompt: str = SYSTEM_PROMPT,
             *,
+            context: ConversationContext | bool | None = None,
             runner: NaiveAgentRunner | None = None,
             controller=None,
             downstream=None,
         ):
+        # set before super().__init__, which binds to the controller when one is given
+        if context is None or context is True:
+            context = ConversationContext()
+        self.context: ConversationContext | None = context or None
         super().__init__(controller, downstream)
         self.runner = runner or NaiveAgentRunner(model=model, system_prompt=system_prompt)
+
+    def bind(self, controller):
+        super().bind(controller)
+        if self.context is not None:
+            self.context.bind(controller)  # BotSpokeFrame in, ConversationFrame out
 
     def _push_text(self, 
             text: str, 
@@ -102,13 +126,23 @@ class NaiveAgentComponent(PipelineComponent):
 
         started = time.perf_counter()
         buffer = ""  # local, so an aborted turn leaves nothing behind
-        
+        generated = ""
+
+        if self.context is None:
+            stream = self.runner.stream(frame.text)
+        else:
+            # the user's turn enters the conversation now; the reply only once it has been heard
+            self.context.add_user(frame.utterance_id, frame.text)
+            prompt, history = self.context.prompt_and_history(frame.utterance_id)
+            stream = self.runner.stream(prompt, message_history=history)
+
         # 句首空格和 strip():现在不处理没关系,但如果以后要在 TTS 前做文本匹配或者统计字数,这个空格会让人困惑。
         # 一次推送包含多句:这个会影响首句延迟,但要等你实际用麦克风体验过,觉得回复开始得慢,再回来调。现在的日志已经能看到每次推送的耗时,到时候有数据可看。
         try:
             is_first = True
-            async for delta in self.runner.stream(frame.text):
+            async for delta in stream:
                 buffer += delta
+                generated += delta
                 sentence, buffer = split_sentences(buffer)
                 if sentence:
                     self._push_text(sentence, frame, tag, started, is_first=is_first)
@@ -122,8 +156,13 @@ class NaiveAgentComponent(PipelineComponent):
             self._push_text("", frame, tag, started, is_first=is_first, is_end=True)
                 
         except Exception as e:
-            self._push_text("不好意思，系统出了点毛病,再见。", frame, tag, started, is_first=is_first, is_end=True)
+            generated = "不好意思，系统出了点毛病,再见。"
+            self._push_text(generated, frame, tag, started, is_first=is_first, is_end=True)
             self.logger.error(f"{tag} LLM error: {e}")
+
+        # provisional: replaced by what the transport reports as heard (an interrupt never gets here)
+        if self.context is not None:
+            self.context.set_generated(frame.utterance_id, generated.strip())
             
         elapsed = time.perf_counter() - started
 

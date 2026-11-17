@@ -19,6 +19,7 @@ from app.frame import (
     StopFrame,
 )
 from app.pipeline.component import PipelineComponent
+from app.transport.spoken import SpokenLedger
 
 
 class TransportInput(PipelineComponent):
@@ -132,6 +133,8 @@ class TransportOutput(PipelineComponent):
         # wall-clock time at which the client is expected to finish playing everything sent so far
         self._playback_end = 0.0
         self._stopped_speaking_task: asyncio.Task | None = None
+        # what of each reply the client has played, from the same estimate (for the conversation context)
+        self.spoken = SpokenLedger()
 
     def _notify(self, frame: EventFrame):
         if self.controller:
@@ -148,6 +151,9 @@ class TransportOutput(PipelineComponent):
 
         async def emit():
             await asyncio.sleep(delay)
+            # before BotStoppedSpeaking: the context knows what was said before the bot counts as idle
+            if (spoken := self.spoken.finish(utterance_id, interrupted=False)) is not None:
+                self._notify(spoken)
             self._notify(BotStoppedSpeakingFrame(utterance_id=utterance_id))
 
         self._stopped_speaking_task = asyncio.create_task(emit())
@@ -159,6 +165,9 @@ class TransportOutput(PipelineComponent):
             dropped = self.drop_backlog()
             if self._stopped_speaking_task is not None:
                 self._stopped_speaking_task.cancel()
+            self.spoken.hear_until(time.time())
+            for spoken in self.spoken.interrupt(frame.utterance_id):
+                self._notify(spoken)
             self._playback_end = 0.0
             self.put(frame)
             self.logger.info(f"[#{frame.utterance_id}] interrupted, dropped {dropped} queued frame(s)")
@@ -168,6 +177,8 @@ class TransportOutput(PipelineComponent):
     async def output_audio(self, frame: AudioFrame):
         tag = f"[#{frame.utterance_id}]"
         latency = time.time() - frame.origin_ts if frame.origin_ts is not None else None
+        # when the client should start playing this chunk, for the heard-text estimate
+        play_from = max(self._playback_end, time.time())
 
         if frame.audio_data:
             await self.websocket.send_bytes(frame.audio_data)
@@ -182,6 +193,10 @@ class TransportOutput(PipelineComponent):
                         f"{tag} first audio sent ({len(frame.audio_data) / 1024:.0f} KB), "
                         f"{latency:.2f}s after speech ended"
                     )
+
+        if frame.audio_data or frame.text is not None:
+            secs = len(frame.audio_data) / 2 / frame.sample_rate if frame.sample_rate else 0.0
+            self.spoken.add(frame.utterance_id, secs, text=frame.text, start=play_from, end=play_from + secs)
 
         if frame.is_end:
             self._schedule_stopped_speaking(frame.utterance_id)

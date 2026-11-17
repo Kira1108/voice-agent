@@ -27,8 +27,10 @@ from app.metrics.latency import mark, tracker_for
 from app.metrics.latency import report as report_latency
 from app.frame import (
     AudioFrame,
+    BotSpokeFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    ConversationFrame,
     EventFrame,
     InterruptFrame,
     ReplyEndFrame,
@@ -37,6 +39,7 @@ from app.frame import (
     UserStoppedSpeakingFrame,
 )
 from app.pipeline.component import PipelineComponent
+from app.transport.spoken import Sentence, SpokenLedger
 
 INPUT_RATE = 16000   # what the pipeline expects from the transport
 WEBRTC_RATE = 48000  # what Opus runs at
@@ -133,6 +136,7 @@ class _Segment:
     pcm: bytes          # 48 kHz int16 mono
     is_end: bool
     pos: int = 0
+    sentence: Sentence | None = None  # the sentence this audio belongs to: playing it counts as heard
 
 
 class BotAudioTrack(MediaStreamTrack):
@@ -154,8 +158,8 @@ class BotAudioTrack(MediaStreamTrack):
         self._start: float | None = None
         self._pts = 0
 
-    def enqueue(self, utterance_id: int | None, pcm: bytes, is_end: bool):
-        self._segments.append(_Segment(utterance_id, pcm, is_end))
+    def enqueue(self, utterance_id: int | None, pcm: bytes, is_end: bool, sentence: Sentence | None = None):
+        self._segments.append(_Segment(utterance_id, pcm, is_end, sentence=sentence))
 
     def clear(self) -> float:
         """Drop everything not played yet; returns the seconds dropped. No on_end for the cut reply."""
@@ -181,6 +185,8 @@ class BotAudioTrack(MediaStreamTrack):
                 take = seg.pcm[seg.pos:seg.pos + need - len(out)]
                 seg.pos += len(take)
                 out += take
+                if seg.sentence is not None:
+                    seg.sentence.heard += len(take)
             if seg.pos >= len(seg.pcm):
                 self._segments.popleft()
                 if seg.is_end:
@@ -216,13 +222,14 @@ class WebRTCOutput(PipelineComponent):
     playing a reply, like TransportOutput does from its playback estimate.
     """
 
-    control_frames = (StopFrame, InterruptFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame)
+    control_frames = (StopFrame, InterruptFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame)
 
     def __init__(self, controller: SessionController | None = None, recorder: DualChannelRecorder | None = None):
         super().__init__(controller)
         self.recorder = recorder
         self.events = DataChannelSender()
         self.track = BotAudioTrack(on_start=self._on_play_start, on_end=self._on_play_end)
+        self.spoken = SpokenLedger()  # what of each reply has been played, for the conversation context
         self._resampler: StreamResampler | None = None
         self._resampler_key: tuple | None = None
 
@@ -230,6 +237,15 @@ class WebRTCOutput(PipelineComponent):
         if self.controller:
             self.controller.receive(frame)
 
+    def _report_spoken(self, frame: BotSpokeFrame | None):
+        if frame is not None:
+            self._notify(frame)
+            self.events.send(frame)
+
+    
+    # 这里的信号分为两种
+    # 1. 报告给大管家，大管家广播给其他组件。
+    # 2. 报告给播放端/页面，一是可以展示的更好，二是页面知道停止播报了。
     def _on_play_start(self, utterance_id: int | None):
         self._notify(BotStartedSpeakingFrame(utterance_id=utterance_id))
         self.events.send(BotStartedSpeakingFrame(utterance_id=utterance_id))
@@ -238,22 +254,35 @@ class WebRTCOutput(PipelineComponent):
         report_latency(self.controller, utterance_id)
 
     def _on_play_end(self, utterance_id: int | None):
+        # before BotStoppedSpeaking: the context knows what was said before the bot counts as idle
+        self._report_spoken(self.spoken.finish(utterance_id, interrupted=False))
         self._notify(BotStoppedSpeakingFrame(utterance_id=utterance_id))
         self.events.send(ReplyEndFrame(utterance_id=utterance_id))
         self.events.send(BotStoppedSpeakingFrame(utterance_id=utterance_id))
 
     async def on_control(self, frame: EventFrame):
+        
         if isinstance(frame, InterruptFrame):
+            # 丢弃队列中所有缓存的音频帧
             dropped = self.drop_backlog()
+            
+            # 清空正在播放的音频和重采样器
             secs = self.track.clear()
             self._resampler = self._resampler_key = None
+            
             if self.recorder is not None:
                 self.recorder.interrupt()
+                
+            # 当出现打断的时候，向大管家汇报已经播放的句子
+            for spoken in self.spoken.interrupt(frame.utterance_id):
+                self._report_spoken(spoken)
+                
+            # 向播放端发送打断信号
             self.events.send(frame)
             self.logger.info(
                 f"[#{frame.utterance_id}] interrupted, dropped {dropped} queued frame(s) and {secs:.1f}s of unplayed audio"
             )
-        elif isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
+        elif isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame)):
             self.events.send(frame)
         else:
             await super().on_control(frame)
@@ -275,8 +304,12 @@ class WebRTCOutput(PipelineComponent):
                 self.logger.warning(f"[#{frame.utterance_id}] reply audio without a sample rate, dropped")
                 frame = frame.model_copy(update={"audio_data": b""})
             pcm = self._to_track_rate(frame) if frame.sample_rate else b""
-            if pcm or frame.is_end:
-                self.track.enqueue(frame.utterance_id, pcm, frame.is_end)
+            # a sentence start is kept even without audio yet (the resampler may hold the first few ms back)
+            sentence = None
+            if pcm or frame.text is not None:
+                sentence = self.spoken.add(frame.utterance_id, len(pcm), text=frame.text)
+            if pcm or frame.is_end or sentence is not None:
+                self.track.enqueue(frame.utterance_id, pcm, frame.is_end, sentence)
             if self.recorder is not None and frame.sample_rate:
                 self.recorder.add_bot(frame.audio_data or b"", frame.sample_rate, frame.utterance_id, frame.is_end)
         elif isinstance(frame, (dict, EventFrame)):
