@@ -25,10 +25,11 @@ from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_mode
 from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
 from app.plugins.llm.translator import TranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent, TencentSTTComponent
-from app.plugins.tts.component import VolTTSComponent
+from app.plugins.tts.component import VolTTS2Component, VolTTSComponent
 from app.plugins.tts.vol_tts import VolTTS
 from app.plugins.turn import BargeInAggregator
 from app.transport.webrtc import WebRTCTransport
+from app.plugins.tts.vol_tts2 import VolTTS2
 
 logger = _logger.bind(component="WebRTC")
 logging.getLogger("aioice").setLevel(logging.WARNING)  # logs every ICE candidate pair at INFO
@@ -48,7 +49,8 @@ def chatbot_components():
         TencentSTTComponent(),
         BargeInAggregator(),
         NaiveAgentComponent(model=local_llm_model()),
-        VolTTSComponent(VolTTS(speaker="S_NaSofbRk2")),  # cloned voice (seed-icl-2.0)
+        # VolTTSComponent(VolTTS(speaker="S_NaSofbRk2")),  # cloned voice (seed-icl-2.0)
+        VolTTS2Component(VolTTS2(speaker = "S_NaSofbRk2")),
     ]
 
 

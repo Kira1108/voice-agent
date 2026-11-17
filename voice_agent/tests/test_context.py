@@ -13,6 +13,8 @@ from app.plugins.tts.component import Qwen3TTSComponent
 from app.transport.spoken import SpokenLedger
 from app.transport.webrtc import WebRTCOutput
 
+MARKER = ConversationContext().interrupted_marker  # appended to a cut-off reply
+
 
 def spoken(uid, sentences, interrupted=False):
     return BotSpokeFrame(utterance_id=uid, sentences=sentences, interrupted=interrupted)
@@ -46,7 +48,9 @@ def test_an_interrupted_reply_keeps_only_whole_sentences_heard_and_a_marker():
     ctx.set_generated(1, "从前有座山。山里有座庙。庙里有个老和尚。")
     ctx.set_spoken(spoken(1, [("从前有座山。", 1.0), ("山里有座庙。", 0.5), ("庙里有个老和尚。", 0.0)], True))
     ctx.add_user(2, "停")
-    assert roles(ctx.prompt_and_history(2)[1]) == [("user", "讲个故事"), ("bot", "从前有座山。（被打断）")]
+    prompt, history = ctx.prompt_and_history(2)
+    assert roles(history) == [("user", "讲个故事"), ("bot", "从前有座山。" + MARKER)]
+    assert prompt == "停"
 
 
 def test_partial_cut_keeps_the_start_of_the_sentence_that_was_cut():
@@ -99,7 +103,7 @@ def test_unknown_text_keeps_the_generated_reply_and_marks_the_interrupt():
     ctx.set_generated(1, "hello there")
     ctx.set_spoken(spoken(1, None, True))            # TTS without sentence marks
     ctx.add_user(2, "x")
-    assert roles(ctx.prompt_and_history(2)[1])[1] == ("bot", "hello there（被打断）")
+    assert roles(ctx.prompt_and_history(2)[1])[1] == ("bot", "hello there" + MARKER)
 
 
 def test_report_order_does_not_matter_and_a_late_interrupt_does_not_undo_a_complete_reply():
@@ -253,7 +257,7 @@ async def test_the_next_turn_only_sees_what_was_heard(controller, model, llm_cal
     assert instructions == "SYS"                     # applied even with an external history
     assert roles(messages) == [
         ("user", "讲个故事"), ("bot", "".join(REPLY)),
-        ("user", "再讲一个"), ("bot", "从前有座山。（被打断）"),
+        ("user", "再讲一个"), ("bot", "从前有座山。" + MARKER),
         ("user", "你刚才说到哪了"),
     ]
 
@@ -282,7 +286,7 @@ async def test_every_change_is_published_with_what_was_generated_and_heard(contr
     await asyncio.sleep(0.05)
     assert len(seen) == 3                            # user turn, generated, heard
     turn = seen[-1].turns[-1]
-    assert turn["said"] == "从前有座山。（被打断）"    # exactly what the LLM gets next turn
+    assert turn["said"] == "从前有座山。" + MARKER     # exactly what the LLM gets next turn
     assert turn["heard"] == "从前有座山。" and turn["generated"] == "从前有座山。山里有座庙。"
     assert turn["reported"] and turn["interrupted"]
 

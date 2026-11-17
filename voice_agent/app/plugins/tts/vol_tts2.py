@@ -110,7 +110,9 @@ class VolTTS2:
         self,
         api_key: str = None,
         speaker: str = "zh_female_gaolengyujie_uranus_bigtts",
-        resource_id: str = "seed-tts-2.0",
+        # None: picked from the speaker, "seed-icl-2.0" for cloned voices ("S_..."), else "seed-tts-2.0";
+        # a cloned voice with the official resource fails with 55000000 "resource ID is mismatched"
+        resource_id: str | None = None,
         sample_rate: int = 24000,
         min_chunk_secs: float = 0.1,
         session_wait_secs: float = 5.0,
@@ -119,7 +121,7 @@ class VolTTS2:
         if not self.api_key:
             raise RuntimeError("缺少火山 TTS API Key，请设置环境变量 VOLC_TTS_API_KEY")
         self.speaker = speaker
-        self.resource_id = resource_id
+        self.resource_id = resource_id or ("seed-icl-2.0" if speaker.startswith("S_") else "seed-tts-2.0")
         self._sample_rate = sample_rate
         self.min_chunk_secs = min_chunk_secs
         # how long a new session waits for the previous one to end before the connection is reset
