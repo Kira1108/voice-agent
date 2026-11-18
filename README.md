@@ -274,10 +274,13 @@ python scripts/chatbot_mic.py --list-devices
 
 ### 声音复刻页面
 
-打开 `http://localhost:8000/voice_clone`:在浏览器里照着朗读稿录一段(可暂停、继续、重录),或者上传一个音频文件,填上音色 ID 后点"开始复刻",训练完可以直接试听。
+打开 `http://localhost:8000/voice_clone`:在浏览器里照着朗读稿录一段(可暂停、继续、重录),或者上传一个音频文件,在下拉框里选一个槽位后点"开始复刻",训练完可以直接试听。
 
+- **我的音色**:页面顶部列出你的所有槽位,每次打开都实时向火山查询状态:已训练 / 空槽位 / 训练中、剩余训练次数。点开能看配置(训练时间、样本语种、试听文本、声音复刻 1.0 和 2.0 各自的试听)和代码里的用法(`VolTTS(speaker="S_xxx")`),也能改名字、写备注、从列表移除(只是不显示,火山上的音色不受影响)。新买的槽位在底部添加。
+- **槽位和名字存在本地**:`voice_agent/voices.json`(已在 `.gitignore`,槽位属于某个账号)。复刻时填的名字会写进去;火山只知道 `S_` 编号,不知道是谁的声音。
+- **复刻选槽位**:下拉框里空槽位排在前面;选已经训练过的槽位会提示"会覆盖"和剩余次数,提交前再确认一次。
 - 录音在浏览器里转成 24 kHz 单声道 16-bit wav 再上传,最长 3 分钟(火山限制 10MB);建议 10–30 秒。
-- 接口:`POST /voice_clone`(multipart 表单,字段说明见 `app/routers/voice_clone.py`)、`GET /voice_clone/status`。调用逻辑在 `app/plugins/voice_clone/seed.py`,也可以命令行用:`python -m app.plugins.voice_clone.seed 样本.wav --speaker-id S_xxx`。
+- 接口:`POST /voice_clone`(multipart 表单,字段说明见 `app/routers/voice_clone.py`)、`GET /voice_clone/status`、`GET /voice_clone/voices`、`PUT` / `DELETE /voice_clone/voices/{speaker_id}`。调用逻辑在 `app/plugins/voice_clone/seed.py`,也可以命令行用:`python -m app.plugins.voice_clone.seed 样本.wav --speaker-id S_xxx`。
 - 用的是 `VOLC_TTS_API_KEY`。预付费音色填控制台里的 `S_` 编号;后付费自定义名需要在控制台另外开通。
 
 ### 本地 LLM(MLX Gemma 4 E2B)

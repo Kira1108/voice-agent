@@ -32,6 +32,11 @@ class Config:
     @property
     def gemma4_e2b_model_path(self):
         return self.llm_model_dir / "gemma-4-e2b-it-qat-4bit"
+
+    @property
+    def voices_path(self):
+        """Local list of cloned voice slots and their names (app/plugins/voice_clone/registry.py)."""
+        return self.PROJECT_PATH / "voices.json"
     
     @property
     def qwen3_tts_model_path(self):

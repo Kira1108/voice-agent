@@ -107,6 +107,33 @@
   .badge[data-tone="bad"] { background: #f5d5c9; color: var(--flare); }
   .error { color: var(--flare); font-size: 14px; white-space: pre-wrap; }
 
+  /* voice library */
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .card-head h2 { margin: 0; }
+  .voices { border-top: 1px solid var(--rule); }
+  .voices .empty { color: var(--muted); font-size: 14px; padding: 14px 2px; }
+  details.voice { border-bottom: 1px solid var(--rule); }
+  details.voice > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto auto; gap: 14px; align-items: center; padding: 10px 2px; }
+  details.voice > summary::-webkit-details-marker { display: none; }
+  details.voice > summary:hover .voice-name { text-decoration: underline; text-decoration-color: var(--rule); }
+  .voice-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voice-name[data-unnamed="true"] { color: var(--muted); font-weight: 400; }
+  .voice-id { font: 13px var(--mono); color: var(--muted); }
+  .voice-left { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  .voice-use { font-size: 13px; padding: 4px 12px; }
+  .voice-body { padding: 4px 2px 16px; display: grid; gap: 14px; }
+  .voice-body dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
+  .voice-body dt { color: var(--muted); }
+  .voice-body dd { margin: 0; word-break: break-all; }
+  .versions { display: grid; gap: 8px; }
+  .version { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+  .version b { font-weight: 600; min-width: 96px; }
+  .voice-edit { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; align-items: center; }
+  code { font: 13px var(--mono); background: var(--fog); padding: 2px 6px; border-radius: 4px; }
+  .add-slot { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
+  .danger { color: var(--flare); border-color: rgb(217 72 28 / .35); }
+  .slot-warn { color: var(--amber); }
+
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .drop:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { .rec-btn::before, .length-fill { transition: none; } }
   @media (max-width: 640px) {
@@ -114,6 +141,9 @@
     .grid { grid-template-columns: 1fr; }
     .result dl { grid-template-columns: 96px 1fr; }
     .script textarea { font-size: 17px; }
+    details.voice > summary { grid-template-columns: minmax(0, 1fr) auto; }
+    .voice-id, .voice-left { display: none; }
+    .voice-edit, .add-slot { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -123,6 +153,19 @@
     <h1>声音复刻<small>VOLCENGINE · SEED</small></h1>
     <p>录一段 10–30 秒的清晰人声，或者上传一个音频文件。</p>
   </header>
+
+  <section class="card" aria-labelledby="library-title">
+    <div class="card-head">
+      <h2 id="library-title">我的音色</h2>
+      <button type="button" class="ghost" id="refresh-voices">刷新</button>
+    </div>
+    <div class="voices" id="voices"><div class="empty">正在查询…</div></div>
+    <form class="add-slot" id="add-slot">
+      <input type="text" id="new-slot" placeholder="新槽位 ID，如 S_xxxxxxxx" autocomplete="off" spellcheck="false" aria-label="新槽位 ID">
+      <input type="text" id="new-slot-name" placeholder="名字（可选）" autocomplete="off" aria-label="名字">
+      <button type="submit" class="ghost">添加槽位</button>
+    </form>
+  </section>
 
   <section class="card" aria-labelledby="sample-title">
     <h2 id="sample-title">样本</h2>
@@ -182,9 +225,17 @@
           <label class="check"><input type="radio" name="kind" value="custom_speaker_id">后付费（自定义名）</label>
         </div>
       </div>
+      <label class="field" id="slot-field">
+        <span>槽位 <small>从「我的音色」里选；已训练的槽位再复刻会覆盖</small></span>
+        <select id="slot"><option value="">正在加载…</option></select>
+      </label>
+      <label class="field" id="custom-field" hidden>
+        <span id="id-label">自定义音色名 <small>8 位以上字母数字，字母开头；首次合成时收槽位费</small></span>
+        <input type="text" id="voice-id" placeholder="myVoice01" autocomplete="off" spellcheck="false">
+      </label>
       <label class="field">
-        <span id="id-label">音色 ID <small>控制台「声音复刻」里的 S_ 编号</small></span>
-        <input type="text" id="voice-id" placeholder="S_xxxxxxxx" autocomplete="off" spellcheck="false">
+        <span>名字 <small>记在「我的音色」里，方便认出是谁的声音</small></span>
+        <input type="text" id="voice-name" placeholder="如：我的声音" autocomplete="off">
       </label>
       <label class="field">
         <span>样本语种</span>
@@ -215,7 +266,7 @@
     <div class="submit">
       <button type="button" class="primary" id="submit" disabled>开始复刻</button>
       <button type="button" class="ghost" id="query">查询状态</button>
-      <span class="hint" id="submit-hint">先录音或上传一个文件，再填音色 ID。</span>
+      <span class="hint" id="submit-hint">先录音或上传一个文件，再选一个槽位。</span>
     </div>
   </section>
 
@@ -228,6 +279,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let busy = false;                    // a clone / query request is in flight
+let voices = [];                     // my voice slots with their live status (GET /voice_clone/voices)
 const TARGET_RATE = 24000;           // what we upload: 24 kHz mono 16-bit wav
 const MAX_SECS = 180;                // 24 kHz 16-bit is ~48 KB/s: stays under the 10 MB limit
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -421,23 +473,22 @@ async function pickFile(file) {
 }
 
 /* ---------- voice settings ---------- */
-const kindLabels = {
-  speaker_id: ["音色 ID", "控制台「声音复刻」里的 S_ 编号", "S_xxxxxxxx"],
-  custom_speaker_id: ["自定义音色名", "8 位以上字母数字，字母开头；首次合成时收槽位费", "myVoice01"],
-};
 function kind() { return document.querySelector('input[name="kind"]:checked').value; }
+function voiceId() { return kind() === "speaker_id" ? $("slot").value : $("voice-id").value.trim(); }
 for (const radio of document.querySelectorAll('input[name="kind"]')) {
   radio.onchange = () => {
-    const [title, help, placeholder] = kindLabels[kind()];
-    $("id-label").innerHTML = "";
-    $("id-label").append(title, " ", Object.assign(document.createElement("small"), { textContent: help }));
-    $("voice-id").placeholder = placeholder;
-    $("voice-id").value = localStorage.getItem(`voice-clone:${kind()}`) || "";
+    $("slot-field").hidden = kind() !== "speaker_id";
+    $("custom-field").hidden = kind() === "speaker_id";
     updateSubmit();
   };
 }
-$("voice-id").value = localStorage.getItem("voice-clone:speaker_id") || "";
+$("voice-id").value = localStorage.getItem("voice-clone:custom_speaker_id") || "";
 $("voice-id").oninput = updateSubmit;
+$("slot").onchange = () => {
+  const v = voices.find((x) => x.speaker_id === $("slot").value);
+  $("voice-name").value = v?.name || "";
+  updateSubmit();
+};
 
 function syncRefText() { $("ref-text").hidden = mode === "record" && $("use-script").checked; }
 $("use-script").onchange = syncRefText;
@@ -445,11 +496,22 @@ $("use-script").onchange = syncRefText;
 function sample() { return mode === "record" ? recordedBlob && { blob: recordedBlob, name: "recording.wav" } : uploadFile && { blob: uploadFile, name: uploadFile.name }; }
 
 function updateSubmit() {
-  const id = $("voice-id").value.trim();
+  const id = voiceId();
   const ready = sample() && id;
   $("submit").disabled = !ready || busy;
   $("query").disabled = !id || busy;
-  $("submit-hint").textContent = busy ? "" : !sample() ? (mode === "record" ? "先录一段，点完成。" : "先选一个音频文件。") : !id ? "再填上音色 ID。" : "准备好了。训练一般要几十秒。";
+  const hint = $("submit-hint");
+  hint.classList.remove("slot-warn");
+  if (busy) { hint.textContent = ""; return; }
+  if (!sample()) { hint.textContent = mode === "record" ? "先录一段，点完成。" : "先选一个音频文件。"; return; }
+  if (!id) { hint.textContent = kind() === "speaker_id" ? "再选一个槽位。" : "再填上自定义音色名。"; return; }
+  const v = kind() === "speaker_id" && voices.find((x) => x.speaker_id === id);
+  if (v && v.ready) {
+    hint.classList.add("slot-warn");
+    hint.textContent = `这个槽位已经是「${v.name || "未命名"}」的音色，再复刻会覆盖它（剩 ${v.available_training_times ?? "?"} 次）。`;
+    return;
+  }
+  hint.textContent = "准备好了。训练一般要几十秒。";
 }
 
 /* ---------- submit / query ---------- */
@@ -499,12 +561,17 @@ function setBusy(on, text = "") {
 }
 
 $("submit").onclick = async () => {
-  const s = sample(), id = $("voice-id").value.trim();
+  const s = sample(), id = voiceId();
   if (!s || !id) return;
-  localStorage.setItem(`voice-clone:${kind()}`, id);
+  if (kind() === "speaker_id") localStorage.setItem("voice-clone:slot", id);
+  else localStorage.setItem("voice-clone:custom_speaker_id", id);
+  const v = kind() === "speaker_id" && voices.find((x) => x.speaker_id === id);
+  if (v && v.ready && !confirm(`「${v.name || id}」已经有音色了，再复刻会覆盖它，确定吗？`)) return;
   const form = new FormData();
   form.append("file", s.blob, s.name);
   form.append(kind(), id);
+  const name = $("voice-name").value.trim();
+  if (name) form.append("name", name);
   form.append("language", $("language").value);
   const demo = $("demo-text").value.trim();
   if (demo) form.append("demo_text", demo);
@@ -521,7 +588,7 @@ $("submit").onclick = async () => {
     const res = await fetch(location.pathname.replace(/\/$/, ""), { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) showError(describeError(data.detail));
-    else showResult(data);
+    else { showResult(data); loadVoices(); }
   } catch (err) {
     showError(`请求失败：${err.message}`);
   } finally {
@@ -531,7 +598,7 @@ $("submit").onclick = async () => {
 };
 
 $("query").onclick = async () => {
-  const id = $("voice-id").value.trim();
+  const id = voiceId();
   if (!id) return;
   setBusy(true, "查询中…");
   try {
@@ -546,6 +613,162 @@ $("query").onclick = async () => {
   }
 };
 
+/* ---------- my voices ---------- */
+const BASE = location.pathname.replace(/\/$/, "");
+
+const VOICE_STATUS = {
+  SUCCESS: ["已训练", "good"], ACTIVE: ["已训练", "good"], TRAINING: ["训练中", "busy"],
+  FAILED: ["训练失败", "bad"], NOT_FOUND: ["空槽位", ""], ERROR: ["查询失败", "bad"],
+};
+const LANG_NAMES = { cn: "中文", en: "英文", ja: "日语", ko: "韩语", es: "西班牙语", fr: "法语", de: "德语", pt: "葡萄牙语", ru: "俄语" };
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c != null));
+  return node;
+}
+
+function badge(status) {
+  const [label, tone] = VOICE_STATUS[status] || [status, ""];
+  const b = el("span", { className: "badge", textContent: label });
+  b.dataset.tone = tone;
+  return b;
+}
+
+const fmtTime = (ms) => ms ? new Date(ms).toLocaleString("zh-CN", { hour12: false }) : "—";
+
+function voiceRow(v) {
+  const details = el("details", { className: "voice" });
+  details.dataset.id = v.speaker_id;
+  const name = el("span", { className: "voice-name", textContent: v.name || "未命名" });
+  name.dataset.unnamed = String(!v.name);
+  const use = el("button", { type: "button", className: "ghost voice-use", textContent: v.ready ? "重新复刻" : "用它复刻" });
+  use.onclick = (e) => { e.preventDefault(); useSlot(v.speaker_id); };
+  details.append(el("summary", {},
+    name,
+    el("span", { className: "voice-id", textContent: v.speaker_id }),
+    badge(v.status),
+    el("span", { className: "voice-left", textContent: v.available_training_times != null ? `剩 ${v.available_training_times} 次` : "" }),
+    use,
+  ));
+
+  const body = el("div", { className: "voice-body" });
+  if (v.error) body.append(errorText(v.error));
+  const dl = el("dl");
+  const row = (k, val) => dl.append(el("dt", { textContent: k }), el("dd", {}, val));
+  row("槽位 ID", el("code", { textContent: v.speaker_id }));
+  if (v.ready) {
+    row("训练时间", fmtTime(v.create_time));
+    row("样本语种", LANG_NAMES[v.language] || v.language || "—");
+    row("试听文本", v.demo_text || "—");
+  } else if (v.status === "NOT_FOUND") {
+    row("说明", "还没训练过，可以用来复刻。");
+  }
+  row("剩余训练次数", v.available_training_times ?? "—");
+  if (v.ready) {
+    row("在代码里用", el("span", {},
+      el("code", { textContent: `VolTTS(speaker="${v.speaker_id}")` }), " 或 ",
+      el("code", { textContent: `VolTTS2(speaker="${v.speaker_id}")` }),
+      el("div", { className: "hint", textContent: "resource 自动选 seed-icl-2.0（声音复刻 2.0）" })));
+  }
+  body.append(dl);
+
+  if (v.versions.length) {
+    const versions = el("div", { className: "versions" });
+    for (const ver of v.versions) {
+      versions.append(el("div", { className: "version" },
+        el("b", { textContent: ver.label }),
+        ver.demo_audio ? el("audio", { controls: true, preload: "none", src: ver.demo_audio }) : el("span", { className: "hint", textContent: "没有试听" })));
+    }
+    body.append(versions, el("div", { className: "hint", textContent: "试听链接约一小时有效，过期了点「刷新」。" }));
+  }
+
+  const nameInput = el("input", { type: "text", value: v.name, placeholder: "名字" });
+  const noteInput = el("input", { type: "text", value: v.note, placeholder: "备注" });
+  const save = el("button", { type: "button", className: "ghost", textContent: "保存" });
+  save.onclick = async () => {
+    save.disabled = true;
+    await fetch(`${BASE}/voices/${encodeURIComponent(v.speaker_id)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: nameInput.value, note: noteInput.value }),
+    });
+    await loadVoices(v.speaker_id);
+  };
+  const remove = el("button", { type: "button", className: "ghost danger", textContent: "从列表移除" });
+  remove.title = "只是不在这里显示，火山上的音色不受影响";
+  remove.onclick = async () => {
+    if (!confirm(`从列表里移除 ${v.name || v.speaker_id}？火山上的音色不受影响，之后可以再添加回来。`)) return;
+    await fetch(`${BASE}/voices/${encodeURIComponent(v.speaker_id)}`, { method: "DELETE" });
+    await loadVoices();
+  };
+  body.append(el("div", { className: "voice-edit" }, nameInput, noteInput, save, remove));
+  if (v.note) body.prepend(el("div", { className: "hint", textContent: v.note }));
+
+  details.append(body);
+  return details;
+}
+
+function fillSlotSelect() {
+  const select = $("slot");
+  const keep = select.value || localStorage.getItem("voice-clone:slot") || "";
+  select.innerHTML = "";
+  select.append(el("option", { value: "", textContent: voices.length ? "选择一个槽位" : "还没有槽位，先在上面添加" }));
+  // empty slots first: the usual choice for a new voice
+  const ordered = [...voices.filter((v) => v.status === "NOT_FOUND"), ...voices.filter((v) => v.status !== "NOT_FOUND")];
+  for (const v of ordered) {
+    const [label] = VOICE_STATUS[v.status] || [v.status];
+    const text = `${v.name || "未命名"} · ${v.speaker_id} · ${label}${v.ready ? `（覆盖，剩 ${v.available_training_times} 次）` : ""}`;
+    select.append(el("option", { value: v.speaker_id, textContent: text }));
+  }
+  if (voices.some((v) => v.speaker_id === keep)) select.value = keep;
+  $("slot").onchange();
+}
+
+async function loadVoices(openId) {
+  const list = $("voices");
+  const open = new Set([...list.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+  if (openId) open.add(openId);
+  try {
+    const res = await fetch(`${BASE}/voices`);
+    voices = await res.json();
+    if (!res.ok) throw new Error(describeError(voices.detail));
+  } catch (err) {
+    list.innerHTML = "";
+    list.append(errorText(`查询音色失败：${err.message}`));
+    return;
+  }
+  list.innerHTML = "";
+  if (!voices.length) list.append(el("div", { className: "empty", textContent: "还没有槽位。把控制台「声音复刻」里买的 S_ 编号加到下面。" }));
+  for (const v of voices) {
+    const row = voiceRow(v);
+    row.open = open.has(v.speaker_id);
+    list.append(row);
+  }
+  fillSlotSelect();
+}
+
+function useSlot(id) {
+  document.querySelector('input[name="kind"][value="speaker_id"]').checked = true;
+  document.querySelector('input[name="kind"]:checked').onchange();
+  $("slot").value = id;
+  $("slot").onchange();
+  $("sample-title").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("refresh-voices").onclick = () => loadVoices();
+$("add-slot").onsubmit = async (e) => {
+  e.preventDefault();
+  const id = $("new-slot").value.trim();
+  if (!id) return;
+  await fetch(`${BASE}/voices/${encodeURIComponent(id)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("new-slot-name").value }),
+  });
+  $("new-slot").value = $("new-slot-name").value = "";
+  await loadVoices(id);
+};
+
+loadVoices();
 showLength(0);
 setRecState("idle");
 updateSubmit();

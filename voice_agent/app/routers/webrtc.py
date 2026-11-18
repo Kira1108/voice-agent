@@ -49,8 +49,8 @@ def chatbot_components():
         TencentSTTComponent(),
         BargeInAggregator(),
         NaiveAgentComponent(model=local_llm_model()),
-        # VolTTSComponent(VolTTS(speaker="S_NaSofbRk2")),  # cloned voice (seed-icl-2.0)
-        VolTTS2Component(VolTTS2(speaker = "S_NaSofbRk2")),
+        VolTTSComponent(VolTTS(speaker="S_1oFofbRk2")),  # cloned voice (seed-icl-2.0)
+        # VolTTS2Component(VolTTS2(speaker = "S_NaSofbRk2")),
     ]
 
 
@@ -60,7 +60,7 @@ def translator_components():
         VADAccumulator(),
         Qwen3STTComponent(),
         TranslatorComponent(model=local_llm_model()),
-        VolTTSComponent(VolTTS()),
+        VolTTSComponent(VolTTS(speaker="S_1oFofbRk2")),
     ]
     
 def simple_chat_components():

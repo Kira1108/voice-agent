@@ -93,3 +93,5 @@ project/logs/app.log*
 
 .python-version 
 output
+# local list of cloned voice slots (ids belong to one account)
+voice_agent/voices.json

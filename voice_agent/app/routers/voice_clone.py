@@ -1,22 +1,29 @@
 """Voice cloning endpoints (Volcengine / Doubao), on top of app/plugins/voice_clone/seed.py.
 
-    GET  /voice_clone          the page: record in the browser or upload a file, then clone
-    POST /voice_clone          upload a voice sample (multipart form) and train a voice
-    GET  /voice_clone/status   query a voice's status and demo audio
+    GET    /voice_clone                     the page: your voices, record or upload a sample, clone
+    POST   /voice_clone                     upload a voice sample (multipart form) and train a voice
+    GET    /voice_clone/status              query a voice's status and demo audio
+    GET    /voice_clone/voices              your voice slots (voices.json) with their live status and config
+    PUT    /voice_clone/voices/{speaker_id} add a slot, or rename it: {"name": ..., "note": ...}
+    DELETE /voice_clone/voices/{speaker_id} forget a slot locally (the voice on Volcengine is untouched)
 
 Example:
-    curl -F file=@me.wav -F speaker_id=S_xxxxxxxx -F demo_text="你好，这是我复刻的声音。" \
+    curl -F file=@me.wav -F speaker_id=S_xxxxxxxx -F name=我的声音 -F demo_text="你好，这是我复刻的声音。" \
          http://localhost:8000/voice_clone
     curl "http://localhost:8000/voice_clone/status?speaker_id=S_xxxxxxxx"
 """
+import asyncio
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from app.plugins.voice_clone.registry import VoiceRegistry
 from app.plugins.voice_clone.seed import (
     AUDIO_FORMATS,
+    LANGUAGES,
     MAX_AUDIO_BYTES,
     SeedVoiceClone,
     VoiceCloneError,
@@ -29,6 +36,7 @@ router = APIRouter(
 )
 
 PAGE = Path(__file__).resolve().parent.parent / "static" / "voice_clone.html"
+registry = VoiceRegistry()
 
 
 @router.get("", response_class=HTMLResponse)
@@ -106,6 +114,9 @@ async def clone_voice(
 
     # how long to wait when `wait` is on, in seconds
     timeout: float = Form(180.0, description="等待训练完成的最长秒数"),
+
+    # a name for the voice in your voice list (voices.json), e.g. "我的声音"; empty keeps the current one
+    name: str | None = Form(None, description="给这个音色起的名字,记在音色列表里"),
 ):
     if bool(speaker_id) == bool(custom_speaker_id):
         raise HTTPException(400, "speaker_id 和 custom_speaker_id 必须且只能填一个")
@@ -133,6 +144,8 @@ async def clone_voice(
                 status = await vc.wait_until_ready(**ids, timeout=timeout)
     except (VoiceCloneError, TimeoutError, ValueError) as e:
         raise _http_error(e)
+    # remember the slot (and its name) once it holds a voice
+    registry.upsert(speaker_id or custom_speaker_id, name=name or None)
     return VoiceCloneResult.from_status(status)
 
 
@@ -150,3 +163,96 @@ async def voice_status(
     except (VoiceCloneError, ValueError) as e:
         raise _http_error(e)
     return VoiceCloneResult.from_status(status)
+
+
+# ---- your voices ----
+
+MODEL_LABELS = {1: "声音复刻 1.0", 5: "声音复刻 2.0"}
+LANGUAGE_NAMES = {code: name for name, code in LANGUAGES.items()}
+
+
+class VoiceVersion(BaseModel):
+    model_type: int | None
+    model_version: int | None
+    label: str                      # 声音复刻 1.0 / 2.0
+    demo_audio: str | None          # demo clip of this model, signed URL valid for about an hour
+    icl_speaker_id: str | None
+
+
+class VoiceInfo(BaseModel):
+    speaker_id: str
+    name: str
+    note: str
+    status: str                     # NOT_FOUND (empty slot) / TRAINING / SUCCESS / FAILED / ACTIVE, or ERROR
+    ready: bool                     # usable for synthesis
+    error: str | None = None        # the query failed (e.g. a slot of another account)
+    available_training_times: int | None = None
+    create_time: int | None = None  # ms timestamp of the last training
+    language: str | None = None     # of the sample: cn, en, ...
+    demo_text: str | None = None    # the text the demo clips say
+    versions: list[VoiceVersion] = []
+
+
+class VoiceUpdate(BaseModel):
+    name: str | None = None
+    note: str | None = None
+
+
+def _ids(speaker_id: str) -> dict:
+    """Prepaid slots are "S_..."; anything else is a postpaid custom name."""
+    return {"speaker_id": speaker_id} if speaker_id.startswith("S_") else {"custom_speaker_id": speaker_id}
+
+
+def _voice_info(entry, status: VoiceStatus | None, error: str | None) -> VoiceInfo:
+    info = VoiceInfo(speaker_id=entry.speaker_id, name=entry.name, note=entry.note,
+                     status="ERROR" if error else status.status.name, ready=bool(status and status.ready), error=error)
+    if status is None:
+        return info
+    raw = status.raw
+    try:
+        demo_text = json.loads(raw.get("extra_params") or "{}").get("demo_text")
+    except (TypeError, ValueError):
+        demo_text = None
+    versions = sorted(
+        (VoiceVersion(model_type=s.get("model_type"), model_version=s.get("model_version"),
+                      label=MODEL_LABELS.get(s.get("model_type"), f"model_type {s.get('model_type')}"),
+                      demo_audio=s.get("demo_audio"), icl_speaker_id=s.get("icl_speaker_id"))
+         for s in raw.get("speaker_status") or []),
+        key=lambda v: -(v.model_version or 0),  # 2.0 first: the one VolTTS / VolTTS2 use
+    )
+    return info.model_copy(update=dict(
+        available_training_times=status.available_training_times,
+        create_time=status.create_time or None,
+        language=LANGUAGE_NAMES.get(status.language) if status.ready else None,
+        demo_text=demo_text,
+        versions=versions,
+    ))
+
+
+@router.get("/voices", response_model=list[VoiceInfo])
+async def list_voices():
+    entries = registry.all()
+    async with SeedVoiceClone() as vc:
+        async def one(entry):
+            try:
+                return _voice_info(entry, await vc.get_voice(**_ids(entry.speaker_id)), None)
+            except (VoiceCloneError, ValueError) as e:
+                return _voice_info(entry, None, str(e))
+        return await asyncio.gather(*(one(e) for e in entries))
+
+
+@router.put("/voices/{speaker_id}", response_model=VoiceInfo)
+async def save_voice(speaker_id: str, body: VoiceUpdate):
+    entry = registry.upsert(speaker_id, name=body.name, note=body.note)
+    try:
+        async with SeedVoiceClone() as vc:
+            return _voice_info(entry, await vc.get_voice(**_ids(speaker_id)), None)
+    except (VoiceCloneError, ValueError) as e:
+        return _voice_info(entry, None, str(e))
+
+
+@router.delete("/voices/{speaker_id}")
+async def forget_voice(speaker_id: str):
+    if not registry.remove(speaker_id):
+        raise HTTPException(404, f"{speaker_id} 不在音色列表里")
+    return {"removed": speaker_id}
