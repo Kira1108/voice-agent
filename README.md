@@ -51,6 +51,8 @@ export TENCENT_ASR_APPID=...               # 可选,有默认值
 uvicorn app.main:app --port 8000
 ```
 
+启动后浏览器打开 `http://localhost:8000/` 就是总入口:左侧选 **Voice Agent**(聊天 / 翻译,即 `/webrtc`)或 **声音复刻**(`/voice_clone`)。切换不会打断正在进行的通话或录音,另一个 tab 上会亮"通话中 / 录音中"。两个页面也可以单独打开。以后加页面,在 `app/static/index.html` 的 `PAGES` 里加一行。
+
 以上环境变量也可以写进 `~/.env`。
 
 模型文件放在 `project/models/` 下:`stt/qwen3-stt`、`tts/qwen3-tts`、`vad/silero_vad.onnx`、`turn/smart-turn.onnx`;用本地 LLM 的话还有 `llm/gemma-4-e2b-it-qat-4bit`。
@@ -537,7 +539,7 @@ Pipeline(WebsocketTransport(websocket), [
 ```
 project/app/
   transport/    WebSocket 收发(ws.py,估算客户端播放进度);WebRTC 收发(webrtc.py,服务端实时播出);都发出 bot 开始 / 结束说话事件
-  static/       浏览器页面:WebRTC 通话(webrtc.html)、声音复刻(voice_clone.html)
+  static/       浏览器页面:总入口(index.html,左侧切换)、WebRTC 通话(webrtc.html)、声音复刻(voice_clone.html)
   audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
   plugins/
     stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
