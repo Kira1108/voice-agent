@@ -58,20 +58,24 @@ class Qwen3TTSComponent(PipelineComponent):
 
         started = time.perf_counter()
         samples = 0
+        sentence_text = text  # carried by the first chunk only
         # 只有整个回复的第一块音频才标 is_first
         first_pending = is_first
         async for chunk in self.tts.synthesize_stream(text):
             if samples == 0:
                 mark(self.controller, frame.utterance_id, "tts_first")
                 self.logger.info(f"{tag} TTS first chunk {time.perf_counter() - started:.2f}s")
-            samples += len(chunk)
             self.push(AudioFrame(
                 audio_data=self._to_pcm16(chunk),
                 sample_rate=self.tts.sample_rate,
                 utterance_id=frame.utterance_id,
                 origin_ts=frame.origin_ts,
                 is_first=first_pending,
+                # the sentence's first chunk carries its text: the transport tracks what has been heard
+                text=sentence_text,
             ))
+            sentence_text = None
+            samples += len(chunk)
             first_pending = False
         elapsed = time.perf_counter() - started
 

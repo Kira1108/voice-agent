@@ -16,6 +16,9 @@ class AudioFrame(Frame):
     # not wall-clock time; set for user speech (by the VAD), None for bot audio
     audio_start: float | None = None
     audio_end: float | None = None
+    # bot audio: the sentence this chunk starts, set on the first chunk of each sentence by the TTS,
+    # so the transport can tell which text the user has heard (see app/transport/spoken.py)
+    text: str | None = None
 
 
 class TextFrame(Frame):

@@ -61,9 +61,11 @@
   select:disabled { opacity: .55; cursor: default; }
   select:focus-visible { outline: 3px solid var(--user); outline-offset: 3px; }
 
-  .log { margin-top: 28px; }
-  .log h2 { font: 600 13px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
-  ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); max-height: 320px; overflow: auto; font: 13px/1.5 var(--mono); }
+  .panels { margin-top: 28px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+  .panels[data-history="off"] { grid-template-columns: minmax(0, 1fr); }
+  .panels[data-history="off"] .history { display: none; }
+  .log h2, .history h2 { font: 600 13px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+  ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); max-height: 420px; overflow: auto; font: 13px/1.5 var(--mono); }
   li { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 6px 2px; border-bottom: 1px solid var(--rule); }
   li time { color: var(--muted); }
   li[data-kind="user"] span { color: var(--user); }
@@ -83,12 +85,26 @@
   .lat-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--c); }
   li[data-kind="latency"] .lat-total { color: var(--ink); font-weight: 600; }
 
+  /* conversation history: what the LLM will see next turn */
+  .history .hint { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+  .chat { border-top: 1px solid var(--rule); max-height: 420px; overflow: auto; padding: 10px 2px 4px; display: flex; flex-direction: column; gap: 10px; }
+  .chat .empty { color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .msg { max-width: 88%; padding: 8px 12px; border-radius: 12px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: rgb(46 85 208 / .1); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: rgb(14 138 110 / .1); border-bottom-left-radius: 4px; }
+  .msg.bot.cut { background: rgb(217 72 28 / .07); }
+  .msg.bot.pending { background: transparent; border: 1px dashed var(--rule); color: var(--muted); }
+  .msg del { color: var(--muted); text-decoration-color: var(--flare); }
+  .msg .meta { display: block; margin-top: 4px; font: 11px var(--mono); color: var(--muted); letter-spacing: .02em; }
+  .msg.user .meta { text-align: right; }
+
   @media (max-width: 640px) {
     main { padding: 20px 14px 32px; }
     .lane, .ruler { grid-template-columns: 84px 1fr; }
     .lane-label { padding: 10px; }
     .lane-label span { display: none; }
     li { grid-template-columns: 72px 1fr; }
+    .panels { grid-template-columns: minmax(0, 1fr); }
   }
 </style>
 </head>
@@ -131,10 +147,17 @@
     </fieldset>
   </div>
 
-  <section class="log">
-    <h2>事件</h2>
-    <ol id="log"><li class="empty">开始通话后，开口、停口、开始播放、播完、打断，都会记在这里，也会标在上面的时间线上。</li></ol>
-  </section>
+  <div class="panels" id="panels">
+    <section class="history" aria-labelledby="history-title">
+      <h2 id="history-title">对话历史</h2>
+      <p class="hint">大模型下一轮看到的就是这些。划掉的是生成了、但你没听到的部分，不进历史。</p>
+      <div class="chat" id="chat"><div class="empty">开始聊天后，这里显示对话历史。</div></div>
+    </section>
+    <section class="log">
+      <h2>事件</h2>
+      <ol id="log"><li class="empty">开始通话后，开口、停口、开始播放、播完、打断，都会记在这里，也会标在上面的时间线上。</li></ol>
+    </section>
+  </div>
 
   <audio id="remote" autoplay></audio>
 </main>
@@ -170,9 +193,9 @@ function log(kind, text) {
 function mark(lane, kind, label) { marks.push({ t: performance.now(), lane, kind, label }); }
 
 const MODES = {
-  chatbot: { title: "语音助手", subtitle: "WEBRTC · CHATBOT", bot: "助手", reply: "回答" },
-  simple_chat: { title: "本地聊天", subtitle: "WEBRTC · MLX GEMMA 4 E2B", bot: "助手", reply: "回答" },
-  translator: { title: "实时翻译", subtitle: "WEBRTC · 中 → 英", bot: "译文", reply: "翻译" },
+  chatbot: { title: "语音助手", subtitle: "WEBRTC · CHATBOT", bot: "助手", reply: "回答", history: true },
+  simple_chat: { title: "本地聊天", subtitle: "WEBRTC · MLX GEMMA 4 E2B", bot: "助手", reply: "回答", history: true },
+  translator: { title: "实时翻译", subtitle: "WEBRTC · 中 → 英", bot: "译文", reply: "翻译", history: false },
 };
 const mode = () => MODES[$("mode").value];
 
@@ -181,6 +204,7 @@ function applyMode() {
   $("title").textContent = m.title;
   $("subtitle").textContent = m.subtitle;
   $("bot-name").textContent = m.bot;
+  $("panels").dataset.history = m.history ? "on" : "off";
   document.title = `${m.title} · WebRTC`;
   localStorage.setItem("webrtc:mode", $("mode").value);
 }
@@ -198,7 +222,56 @@ const EVENTS = {
   interrupt: (e) => { laneState("bot", ""); mark("both", "interrupt", "打断"); log("interrupt", `打断了对 #${e.utterance_id} 的${mode().reply}`); },
   stop: () => { log("bot", "服务端结束了通话"); hangUp(false); },
   latency: (e) => showLatency(e),
+  conversation: (e) => renderConversation(e.turns),
+  bot_spoke: (e) => {
+    // what the user actually heard of the reply: this is what goes into the conversation history
+    if (!e.sentences) return;  // the TTS did not say which text it played
+    const heard = e.sentences.filter(([, f]) => f >= 0.999).map(([t]) => t).join("");
+    if (!e.interrupted) return log("bot", `${mode().bot}说的：${heard}`);
+    log("interrupt", `${mode().bot}被打断，听到 ${e.sentences.filter(([, f]) => f >= 0.999).length}/${e.sentences.length} 句：${heard || "（一句都没说完）"}`);
+  },
 };
+
+/* ---------- conversation history: what the LLM sees next turn ---------- */
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function renderConversation(turns) {
+  const chat = $("chat");
+  const stick = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 8;
+  chat.innerHTML = "";
+  if (!turns.length) chat.append(el("div", "empty", "开始聊天后，这里显示对话历史。"));
+  turns.forEach((t, i) => {
+    const user = el("div", "msg user", t.user);
+    // the LLM gets an unanswered turn together with the next one, as one user message
+    const merged = t.reported && !t.said && i < turns.length - 1;
+    user.append(el("span", "meta", `#${t.utterance_id}${merged ? " · 没被回答，和下一句合并发给大模型" : ""}`));
+    chat.append(user);
+
+    const bot = el("div", "msg bot");
+    if (!t.reported && !t.generated) {
+      bot.classList.add("pending");
+      bot.append("思考中…");
+    } else if (!t.reported) {
+      bot.classList.add("pending");
+      bot.append(t.generated, el("span", "meta", "生成完，等待播放结果"));
+    } else {
+      const heard = t.heard ?? t.said ?? "";
+      const unheard = t.generated && t.generated.startsWith(heard) ? t.generated.slice(heard.length) : (t.interrupted ? t.generated : "");
+      if (t.interrupted) bot.classList.add("cut");
+      if (heard) bot.append(heard);
+      if (unheard && unheard.trim()) bot.append(el("del", null, unheard));
+      const meta = !t.interrupted ? "播完" : heard ? "被打断，只记听到的部分" : "被打断，一句都没听到，不进历史";
+      bot.append(el("span", "meta", meta));
+    }
+    chat.append(bot);
+  });
+  if (stick) chat.scrollTop = chat.scrollHeight;
+}
 
 /* ---------- latency: speech end → first audio ---------- */
 const STAGE_COLORS = { VAD: "#d0c4ae", STT: COLORS.user, turn: "#b7791f", LLM: "#172033", TTS: COLORS.bot, out: "#8f99ab" };
@@ -358,6 +431,7 @@ async function call() {
     if (pc?.connectionState === "connected") {
       startedAt = performance.now();
       latencyTotals = [];
+      renderConversation([]);
       setStatus("live", "通话中 0:00");
       timer = setInterval(() => {
         const s = Math.floor((performance.now() - startedAt) / 1000);
