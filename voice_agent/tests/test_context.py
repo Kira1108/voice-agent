@@ -298,3 +298,71 @@ async def test_webrtc_output_forwards_the_history_to_the_page(controller):
     controller.receive(ConversationFrame(turns=[{"user": "hi"}]))
     await asyncio.sleep(0.05)
     assert [f.turns for f in sent if isinstance(f, ConversationFrame)] == [[{"user": "hi"}]]
+
+
+# ---- TTS without sentence marks (VolTTS2): cut the generated text by the fraction of audio played ----
+
+STORY = "从前有座山。山里有座庙。庙里有和尚。"  # three sentences of 6 characters
+
+
+def test_ledger_reports_the_played_fraction_when_the_text_is_unknown():
+    ledger = SpokenLedger()
+    s = ledger.add(1, 100)
+    ledger.add(1, 100)
+    s.heard = 50
+    frame = ledger.finish(1, interrupted=True)
+    assert frame.sentences is None and frame.played == 0.25
+    ledger.add(2, 100)
+    assert ledger.finish(2, interrupted=False).played == 1.0
+
+
+@pytest.mark.parametrize("report_first", [False, True])
+def test_unmarked_reply_is_cut_by_time_whichever_arrives_first(report_first):
+    ctx = ConversationContext()
+    ctx.add_user(1, "讲个故事")
+    report = BotSpokeFrame(utterance_id=1, sentences=None, played=0.5, interrupted=True)  # 9 of 18 characters
+    if report_first:
+        ctx.set_spoken(report)
+        ctx.set_generated(1, STORY)
+    else:
+        ctx.set_generated(1, STORY)
+        ctx.set_spoken(report)
+    ctx.add_user(2, "然后呢")
+    assert roles(ctx.prompt_and_history(2)[1])[1] == ("bot", "从前有座山。" + MARKER)
+
+
+async def test_webrtc_cuts_an_unmarked_reply_by_the_audio_played(controller):
+    ctx = ConversationContext()
+    ctx.bind(controller)
+    out = WebRTCOutput(controller)
+    ctx.add_user(1, "讲个故事")
+    ctx.set_generated(1, STORY)
+    for _ in range(3):                               # 1.5 s of audio, no sentence marks
+        await out.handle(AudioFrame(audio_data=bytes(24000), sample_rate=24000, utterance_id=1))
+    await out.handle(AudioFrame(audio_data=b"", sample_rate=24000, utterance_id=1, is_end=True))
+    for _ in range(35):                              # 0.7 s played
+        out.track._next_chunk()
+    controller.receive(InterruptFrame(utterance_id=1))
+    await asyncio.sleep(0.05)
+    assert ctx.turns[0].played == pytest.approx(0.47, abs=0.02)
+    assert ctx.turns[0].assistant == "从前有座山。"
+
+
+async def test_a_reply_cut_while_generating_keeps_what_was_sent_to_the_tts(controller):
+    async def slow(messages, info: AgentInfo):
+        yield "第一句说完了。"
+        await asyncio.sleep(10)
+        yield "这句还没生成完"
+    llm = NaiveAgentComponent(model=FunctionModel(stream_function=slow))
+    llm.bind(controller)
+    llm.downstream = Collect()
+    task = asyncio.create_task(llm.handle(TextFrame(text="讲个故事", utterance_id=1)))
+    for _ in range(50):                              # until the first sentence has gone to the TTS
+        await asyncio.sleep(0.02)
+        if llm.downstream.frames:
+            break
+    assert [f.text for f in llm.downstream.frames] == ["第一句说完了。"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert llm.context.turns[0].generated == "第一句说完了。"

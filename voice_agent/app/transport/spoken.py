@@ -83,15 +83,24 @@ class SpokenLedger:
         
         sentences = self._replies.pop(utterance_id, [])
         complete = not interrupted
-        
-        # 所有的sentence的文本都为空，说明什么也没有听到
+        played = None
+
+        # 所有段都没有文本：TTS 没标句子（如 VolTTS2），不知道播的是哪些字；
+        # 只能报告这一轮已排队的音频播了几成，由 context 按这个比例去截生成的全文
         if sentences and all(s.text is None for s in sentences):
-            heard = None  
+            heard = None
+            total = sum(s.total for s in sentences)
+            if complete:
+                played = 1.0
+            elif total > 0:
+                played = round(min(1.0, sum(s.heard for s in sentences) / total), 3)
+            else:
+                played = 0.0
         
         # 至少有一个 sentence 有文本，记录每个 sentence 的文本和播放比例
         else:
             heard = [(s.text, round(s.fraction(complete), 3)) for s in sentences if s.text is not None]
-        return BotSpokeFrame(utterance_id=utterance_id, sentences=heard, interrupted=interrupted)
+        return BotSpokeFrame(utterance_id=utterance_id, sentences=heard, played=played, interrupted=interrupted)
 
     def interrupt(self, utterance_id: int | None) -> list[BotSpokeFrame]:
         """Everything still playing or queued was cut off. The interrupted reply is reported even if none of

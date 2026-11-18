@@ -49,10 +49,13 @@ class BotSpokeFrame(EventFrame):
     `sentences` lists each sentence of the reply with how much of its audio was played (1.0 = all of it,
     0.0 = none), in order. None when the transport could not tell which text the audio was (a TTS that does
     not mark sentence starts); an empty list when nothing was played at all.
+    `played`, set only when `sentences` is None: the fraction of the reply's queued audio that was played,
+    so the generated text can be cut by time instead.
     """
     event_type: Literal["bot_spoke"] = Field(default="bot_spoke", description = "type of the event frame")
     utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
     sentences: Optional[list[tuple[str, float]]] = Field(default=None, description="(sentence, fraction played)")
+    played: Optional[float] = Field(default=None, description="fraction of the audio played, when sentences is None")
     interrupted: bool = Field(default=False, description="cut off before the end")
 
 

@@ -225,7 +225,11 @@ const EVENTS = {
   conversation: (e) => renderConversation(e.turns),
   bot_spoke: (e) => {
     // what the user actually heard of the reply: this is what goes into the conversation history
-    if (!e.sentences) return;  // the TTS did not say which text it played
+    if (!e.sentences) {
+      // the TTS did not say which text it played: only how much of the audio
+      if (e.interrupted && e.played != null) log("interrupt", `${mode().bot}被打断，按时间估算听到了约 ${Math.round(e.played * 100)}%`);
+      return;
+    }
     const heard = e.sentences.filter(([, f]) => f >= 0.999).map(([t]) => t).join("");
     if (!e.interrupted) return log("bot", `${mode().bot}说的：${heard}`);
     log("interrupt", `${mode().bot}被打断，听到 ${e.sentences.filter(([, f]) => f >= 0.999).length}/${e.sentences.length} 句：${heard || "（一句都没说完）"}`);

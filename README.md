@@ -448,7 +448,8 @@ transport:记每句播了多少 ── 播完 / 被打断 ──▶ BotSpokeFram
 - **谁知道播了多少**:只有 transport。WebRTC 由服务端逐帧播出,精确到 20ms;WebSocket 按播放时间估算。播放记账在 `app/transport/spoken.py`,两个 transport 共用。一轮结束(播完或被打断)时,通过 controller 发出 `BotSpokeFrame`:每句话和它被播出的比例。WebRTC 页面上也会显示"实际说的"和"被打断,听到 n/m 句"。
 - **在页面上看**:context 每次变化(用户这一轮进来、回复生成完、播放结果回来)都会发一个 `ConversationFrame`,带上完整历史,WebRTC 页面在"对话历史"里显示成聊天记录:就是大模型下一轮看到的内容,生成了但没播出去的部分划掉显示。翻译模式没有对话历史,不显示这一栏。
 - **记成什么**:被打断的回复只保留**完整听到的句子**,后面加"（被打断）"。一个 TTS 片段里有好几句时(LLM 吐得快,几句一起送去合成),按字数比例拆开算。可以改成连半句一起截(`ConversationContext(partial="cut")`,截断处加"…")。一句都没听到就不记回复,前后两轮用户的话合并成一条,保证用户 / 助手交替(Gemma 等模型的模板要求交替)。
-- **兜底**:transport 没报告的话(比如某个 transport 不支持,或 TTS 没标句子,如 `VolTTS2`),就用生成的全文,和以前一样。所以默认开启也不会比以前差。
+- **TTS 没标句子时按时间截**(如 `VolTTS2`,整段文字一起合成,音频对不上是哪句):transport 仍然知道这一轮已排队的音频播了几成,随 `BotSpokeFrame.played` 报上来,context 按这个比例截生成的全文(按字数比例,只留完整的句子)。比例是按"已经排进来的音频"算的,TTS 比实时快很多,被打断时一般已经合成完,偶尔会略微多算。LLM 还在生成时就被打断的,用已经送给 TTS 的部分来截。
+- **兜底**:transport 什么都没报告的话(比如某个 transport 不支持),就用生成的全文,和以前一样。所以默认开启也不会比以前差。
 - **思考阶段被打断**:`BargeInAggregator` 会把上一轮重新放回草稿、和新的一句合并。context 发现新一轮以上一轮没被回答的话开头,就替换掉它,同一句话不会出现两次。
 - **上限**:默认最多保留 50 轮(`max_turns`)。
 - **pydantic-ai 的坑**:自己传 `message_history` 时,`Agent(system_prompt=...)` 不会被加进请求(会丢)。所以 `NaiveAgentRunner` 改用 `instructions=`,每次都会带上。

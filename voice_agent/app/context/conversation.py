@@ -14,6 +14,8 @@ Rules:
   - an interrupted reply keeps only the sentences heard to the end (`partial="cut"` also keeps the start of
     the sentence that was cut, by the fraction played), followed by `interrupted_marker`; a TTS chunk holding
     several sentences is split, assuming audio proportional to characters
+  - a TTS that does not mark sentences (VolTTS2): the transport only knows what fraction of the reply's
+    audio was played, and the generated text is cut by that fraction the same way
   - a reply nothing of which was heard leaves no assistant message; the user turns around it are merged into
     one user message (chat templates such as Gemma's expect user and assistant to alternate)
   - a user turn that starts with the previous, unanswered user turn replaces it: turn-taking re-opened that
@@ -49,6 +51,7 @@ class ContextTurn:
     reported: bool = False        # assistant is what the transport says was heard
     interrupted: bool = False
     generated: str | None = None  # the whole reply the LLM generated, heard or not (for display)
+    played: float | None = None   # TTS without sentence marks: fraction of the reply's audio played
 
     @property
     def answered(self) -> bool:
@@ -117,6 +120,8 @@ class ConversationContext:
         turn.generated = text
         if not turn.reported:
             turn.assistant = text
+        elif turn.played is not None:
+            turn.assistant = self._cut_by_time(text, turn.played)  # the report came first
         self._publish()
 
     def set_spoken(self, frame: BotSpokeFrame):
@@ -125,15 +130,27 @@ class ConversationContext:
             return  # not a turn of this conversation, or already complete
         turn.reported = True
         turn.interrupted = frame.interrupted
-        if frame.sentences is None:
-            pass  # the transport could not tell which text was played: keep the generated one
-        else:
+        if frame.sentences is not None:
             turn.assistant = self._heard_text(frame.sentences)
+        elif frame.played is not None:
+            # which text was played is unknown, only how much of the audio: cut the generated text by that
+            turn.played = frame.played
+            if turn.generated is not None:
+                turn.assistant = self._cut_by_time(turn.generated, frame.played)
+        # else: nothing known about what was played: keep the generated text
         if frame.interrupted:
-            done = sum(1 for _, f in frame.sentences or [] if f >= FULLY_HEARD)
-            total = len(frame.sentences) if frame.sentences is not None else "?"
-            logger.info(f"[#{frame.utterance_id}] reply cut off, heard {done}/{total} sentence(s): {turn.assistant!r}")
+            if frame.sentences is not None:
+                done = sum(1 for _, f in frame.sentences if f >= FULLY_HEARD)
+                heard = f"{done}/{len(frame.sentences)} sentence(s)"
+            else:
+                heard = f"~{(frame.played or 0) * 100:.0f}% by time"
+            logger.info(f"[#{frame.utterance_id}] reply cut off, heard {heard}: {turn.assistant!r}")
         self._publish()
+
+    def _cut_by_time(self, text: str, played: float) -> str:
+        """The generated text cut at the fraction of its audio played, assuming audio proportional to
+        characters (whole sentences only, unless partial="cut")."""
+        return text if played >= FULLY_HEARD else self._heard_text([(text, played)])
 
     def on_control(self, frame):
         if isinstance(frame, BotSpokeFrame):

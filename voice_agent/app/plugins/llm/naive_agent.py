@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import AsyncGenerator
 from pydantic_ai import Agent
@@ -127,6 +128,7 @@ class NaiveAgentComponent(PipelineComponent):
         started = time.perf_counter()
         buffer = ""  # local, so an aborted turn leaves nothing behind
         generated = ""
+        pushed = ""  # the part of `generated` already handed to the TTS
 
         if self.context is None:
             stream = self.runner.stream(frame.text)
@@ -146,6 +148,7 @@ class NaiveAgentComponent(PipelineComponent):
                 sentence, buffer = split_sentences(buffer)
                 if sentence:
                     self._push_text(sentence, frame, tag, started, is_first=is_first)
+                    pushed += sentence
                     is_first = False
                     
 
@@ -155,12 +158,18 @@ class NaiveAgentComponent(PipelineComponent):
                 
             self._push_text("", frame, tag, started, is_first=is_first, is_end=True)
                 
+        except asyncio.CancelledError:
+            # cut off while still generating: what was already sent to the TTS may have been played
+            # (and can be cut by time, see ConversationContext)
+            if self.context is not None:
+                self.context.set_generated(frame.utterance_id, pushed.strip())
+            raise
         except Exception as e:
             generated = "不好意思，系统出了点毛病,再见。"
             self._push_text(generated, frame, tag, started, is_first=is_first, is_end=True)
             self.logger.error(f"{tag} LLM error: {e}")
 
-        # provisional: replaced by what the transport reports as heard (an interrupt never gets here)
+        # provisional: replaced by what the transport reports as heard (an interrupt is handled above)
         if self.context is not None:
             self.context.set_generated(frame.utterance_id, generated.strip())
             
