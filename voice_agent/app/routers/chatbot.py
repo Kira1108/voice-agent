@@ -36,7 +36,6 @@ async def chatbot_endpoint(websocket: WebSocket):
     #         Qwen3STTComponent(),
     #         # KeywordInterruptAggregator(),
     #         # SmartTurnKeywordInterruptAggregator(),
-        
     #         BargeInAggregator(),
     #         NaiveAgentComponent(model=open_router_model()),
     #         VolTTSComponent(VolTTS()),
