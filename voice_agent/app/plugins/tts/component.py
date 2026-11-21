@@ -206,7 +206,7 @@ class VolTTS2Component(PipelineComponent):
         is_end = getattr(frame, "is_end", True)
 
         reply = self._reply
-        if reply is not None and (is_first or reply.utterance_id != frame.utterance_id):
+        if reply is not None and (is_first or reply.sutterance_id != frame.utterance_id):
             # the previous reply never got its end frame (e.g. the LLM was cancelled)
             self._abort_reply()
             reply = None
