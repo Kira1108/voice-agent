@@ -3,7 +3,7 @@ from fastapi import APIRouter, WebSocket
 from app.audio.vad_accumulator import VADAccumulator
 from app.pipeline.pipeline import Pipeline
 from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
-from app.plugins.llm.translator import TranslatorComponent
+from app.plugins.llm.translator import SimulTranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent
 from app.plugins.tts.component import Qwen3TTSComponent
 from app.plugins.tts.qwen3_tts import Qwen3TTS
@@ -27,7 +27,7 @@ async def translator_endpoint(websocket: WebSocket):
         [
             VADAccumulator(),
             Qwen3STTComponent(),
-            TranslatorComponent(model=open_router_model()),
+            SimulTranslatorComponent(model=open_router_model()),
             # Qwen3TTSComponent(Qwen3TTS(language="English")),
             VolTTSComponent(VolTTS()),
         ],

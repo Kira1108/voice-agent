@@ -23,7 +23,7 @@ from app.plugins.llm.naive_agent import NaiveAgentComponent
 from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
 from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
 from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
-from app.plugins.llm.translator import TranslatorComponent
+from app.plugins.llm.translator import SimulTranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent, TencentSTTComponent
 from app.plugins.tts.component import VolTTS2Component, VolTTSComponent
 from app.plugins.tts.vol_tts import VolTTS
@@ -59,7 +59,7 @@ def translator_components():
     return [
         VADAccumulator(),
         Qwen3STTComponent(),
-        TranslatorComponent(model=local_llm_model()),
+        SimulTranslatorComponent(model=local_llm_model(), max_waits = 4, pause_secs = 2),  # waits on fragments too short to translate
         VolTTSComponent(VolTTS(speaker="S_1oFofbRk2")),
     ]
     
