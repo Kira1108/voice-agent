@@ -1,6 +1,6 @@
 # Voice Agent
 
-![Voice Agent](./samples/latency.png)
+![Voice Agent](./samples/image.png)
 
 实时语音服务,目前有三个接口:
 
@@ -45,6 +45,7 @@ cd project
 pip install -r requirements.txt            # 需要 Apple Silicon macOS, Python >= 3.10
 export OPENROUTER_API_KEY=sk-...           # LLM
 export VOLC_TTS_API_KEY=...                # 火山 TTS(translator、chatbot 用)
+export DEEPSEEK_API_KEY=...                # 快答慢想后台的搜索 / 读网页(可选)
 export TENCENT_ASR_SECRET_ID=...           # 腾讯流式 STT(chatbot 用)
 export TENCENT_ASR_SECRET_KEY=...
 export TENCENT_ASR_APPID=...               # 可选,有默认值
@@ -273,6 +274,7 @@ python scripts/chatbot_mic.py --list-devices
 - 回复由服务端按 20 ms 一帧实时播出,所以 bot 开始 / 结束说话是精确的,不靠估算;打断时服务端直接清空没播的音频。
 - 页面上是一条实时双轨时间线:上面是你,下面是助手,开口、停口、打断都标在上面。每次通话也会录到 `output/recordings/chatbot_webrtc_*.wav`。
 - 麦克风只能在 `localhost` 或 https 下用。默认不配 STUN(本机 / 局域网够用);要过公网,在 `app/routers/webrtc.py` 的 `ICE_SERVERS` 和页面里都加上。
+- "快答慢想"模式(`stfr`):前台马上回话,慢活交给后台任务,有结果再告诉你。见[架构 / 快答慢想](#快答慢想appplugins-llmstfrpy)。
 
 ### 声音复刻页面
 
@@ -460,6 +462,42 @@ transport:记每句播了多少 ── 播完 / 被打断 ──▶ BotSpokeFram
 
 用法:`NaiveAgentComponent` 默认就带一个 context,不用改。要配置就传 `NaiveAgentComponent(model=..., context=ConversationContext(max_turns=20, partial="cut"))`;要退回旧行为(生成多少记多少)传 `context=False`。翻译、变声不用 LLM 对话,不受影响。
 
+### 快答慢想(`app/plugins/llm/stfr.py`)
+
+Slow thinker, fast responder。语音对话里,前台不能让用户干等:查询、计算、多步推理这些慢活,交给后台去做,前台先回一句"我帮你查一下",继续陪用户说话;后台有了结果,再由前台用口语转述。
+
+```
+用户 ⇄ Responder ── delegate / cancel_task / show_task / list_tasks ──▶ Orchestrator ──▶ Thinker × N
+          ▲                                                                 │
+          └──────────────── 任务结束(进组件自己的队列)◀────────────────────┘
+```
+
+它只是一个新组件 `STFRComponent`,和 `NaiveAgentComponent` 一样 `TextFrame` 进、`TextStreamFrame` 出,pipeline、TTS、transport、轮次管理、`ConversationContext` 都不变。组件内部四个角色:
+
+| 角色 | 是什么 | 职责 |
+|---|---|---|
+| **Responder** | 前台 LLM(流式) | 和用户说话。自己不做慢活:用 `delegate` 给后台发一条能单独看懂的文本指令,马上拿到任务编号就返回;用户问进度时查 `list_tasks` / `show_task`,不要了就 `cancel_task` |
+| **Orchestrator** | 普通代码,不是 LLM | 任务表。每个任务起一个后台 asyncio 任务跑 thinker,最多同时 `max_tasks` 个(默认 5);任务结束时回调组件 |
+| **Task** | 一次委派 | 指令、状态(running / done / failed / cancelled)、结果,以及**是否已经告诉用户**——这个标记决定了结果什么时候说、会不会重复说 |
+| **Thinker** | 后台 LLM | 收到指令 + 委派那一刻的对话记录,执行一个任务,写一份给 responder 的资料:先一句话回答,再列关键细节(人名、地名、时间、数字、事件)。有自己的工具(`THINKER_TOOLS`):`get_current_time`,以及 DeepSeek 的 `web_search` / `web_fetch`(`web_tools.py`,要 `DEEPSEEK_API_KEY`);用 `thinker_tools=[...]` 换 |
+
+**结果怎么回到用户**——不靠 responder 轮询,而是任务结束时主动通知组件:
+
+- **主动说**:任务结束时用户和 bot 都没在说话,组件开一个"通知轮",responder 直接把结果告诉用户。这一轮没有用户的话,用负数 utterance id(-1、-2…),用户那一栏记"（用户没说话）"。
+- **顺带说**:任务结束时有人在说话,就不插嘴。responder 每一轮的输入前面都带一块任务板(标成【资料】:正在查的、刚查到还没说的、最近 3 条已经说过的),结果跟下一次回复一起说出去;说过的留着,用户追问细节时直接用,不用再查。
+- 一次回复完整生成完,它看到的那些结果才算"已告诉用户";回复被打断,结果留在任务板上,下次再说。
+- **像自己查到的**:用户不该听到"后台任务有结果了"。所以任务板叫【资料】、通知轮的用户消息只是"（用户没说话）",提示词也禁止提后台、任务、系统;responder 说"查到了,……",挑具体信息讲。
+
+**两种生命周期分开**:用户插话打断只取消正在生成的这一轮回复,后台任务照跑;只有 `cancel_task` 或会话结束才会取消任务。通知轮正在播放时用户开口,组件会自己打断它(aggregator 只认识用户的轮次)。
+
+**对话历史**:仍然只记用户听到的话。responder 的工具调用不进历史,任务状态每一轮通过任务板重新给;thinker 拿到的对话记录也是这一份。
+
+**在页面上看**:任务每有变化(委派、thinker 调了一个工具、工具返回、查完、说给用户、取消),组件都会发一个 `TasksFrame`,带上所有任务和每一步,WebRTC transport 和 `ConversationFrame` 一样转给页面。"快答慢想"模式下页面多一块"后台 · THINKER":每个任务一张卡片,实时显示它在搜什么(SEARCH)、读哪一页(READ)、用了多久,查完展开资料,说给你之后变绿。thinker 的每一步来自 `agent.iter()` 的节点,不需要模型支持流式。
+
+用法:WebRTC 页面选"快答慢想",或者 `STFRComponent(model=..., thinker_model=..., max_tasks=5, thinker_tools=[...])`。
+
+**pydantic-ai 的坑**:sync 工具会被放进线程里执行,那里起不了 asyncio 任务,所以 responder 的工具都是 `async`;`run_stream` 会丢掉工具调用之后模型说的话,要用 `run_stream_events`。有的模型(Gemma)在工具返回后会把前面说过的话重说一遍,`Responder.stream` 会把重复的开头去掉。
+
 ### STT(`app/plugins/stt/`)
 
 - **整句 STT**(`VADAccumulator` + `Qwen3STTComponent`):VAD 按 Silero 的状态把音频攒成一整句,再交给 Qwen3 识别。VAD 会额外保留说话前 0.3 秒的音频(`pre_roll_secs`),不然第一个字会被切掉("闭嘴"会被识别成"嘴")。
@@ -543,7 +581,7 @@ project/app/
   audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
   plugins/
     stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
-    llm/        翻译(translator)、对话(naive_agent);模型:OpenRouter(openrouter)、本地服务(local_llm)、本机 MLX(mlx_llm)
+    llm/        翻译(translator)、对话(naive_agent)、快答慢想(stfr:responder + orchestrator + thinker);模型:OpenRouter(openrouter)、本地服务(local_llm)、本机 MLX(mlx_llm)
     tts/        Qwen3(本机)、火山 HTTP(vol_tts)、火山双向 WebSocket(vol_tts2 + volc_protocol)
     turn/       轮次管理:半双工、"闭嘴"、smart turn、插话打断;docs/ 里有图解说明
   pipeline/     组件基类和 Pipeline

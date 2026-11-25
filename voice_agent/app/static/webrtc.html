@@ -14,6 +14,7 @@
     --user: #2e55d0;   /* left channel: you */
     --bot: #0e8a6e;    /* right channel: the assistant */
     --flare: #d9481c;  /* interrupts and errors */
+    --think: #6a4fc9;  /* the background thinker */
     --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
@@ -98,6 +99,68 @@
   .msg .meta { display: block; margin-top: 4px; font: 11px var(--mono); color: var(--muted); letter-spacing: .02em; }
   .msg.user .meta { text-align: right; }
 
+  /* background tasks (stfr mode): what the thinker is doing, step by step, in a sidebar on wide screens */
+  main[data-tasks="on"] { max-width: 1680px; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 28vw, 460px); column-gap: 32px; align-items: start;
+          grid-template-rows: auto auto auto 1fr; }  /* header, timeline, controls, panels: a tall sidebar only stretches the last */
+  main[data-tasks="on"] > * { grid-column: 1; }
+  main[data-tasks="on"] > .tasks { grid-column: 2; grid-row: 1 / -1; position: sticky; top: 16px; margin-top: 0;
+          max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+  main[data-tasks="on"] .task-list { grid-template-columns: minmax(0, 1fr); overflow: auto; min-height: 0; flex: 1 1 auto; padding-right: 4px; }
+  main[data-tasks="on"] .panels { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tasks { margin-top: 28px; }
+  .tasks[hidden] { display: none; }
+  .tasks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .tasks-head h2 { font: 600 13px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 0; }
+  .tasks-head h2 b { color: var(--think); font-weight: 600; }
+  .tasks-count { font: 12px var(--mono); color: var(--muted); }
+  .tasks-count b { color: var(--think); }
+  .task-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-items: start; border-top: 1px solid var(--rule); padding-top: 14px; }
+  .task-list .empty { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }
+  .task { position: relative; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px 12px; overflow: hidden;
+          animation: task-in .35s ease-out; }
+  .task::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--rule); }
+  .task[data-status="running"] { border-color: rgb(106 79 201 / .45); box-shadow: 0 0 0 3px rgb(106 79 201 / .08); }
+  .task[data-status="running"]::before { background: linear-gradient(90deg, transparent, var(--think), transparent); background-size: 40% 100%;
+          background-repeat: no-repeat; animation: scan 1.4s linear infinite; }
+  .task[data-status="done"]::before { background: var(--think); }
+  .task[data-status="done"][data-reported="true"]::before { background: var(--bot); }
+  .task[data-status="failed"]::before { background: var(--flare); }
+  .task[data-status="cancelled"] { opacity: .6; }
+  .task-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font: 11px var(--mono); color: var(--muted); letter-spacing: .04em; }
+  .task-top .state { color: var(--think); font-weight: 600; }
+  .task[data-status="done"][data-reported="true"] .state { color: var(--bot); }
+  .task[data-status="failed"] .state { color: var(--flare); }
+  .task[data-status="cancelled"] .state { color: var(--muted); }
+  .task-q { margin: 6px 0 10px; font-size: 15px; font-weight: 600; line-height: 1.45; }
+  .task[data-status="cancelled"] .task-q { text-decoration: line-through; text-decoration-color: var(--muted); }
+  .steps { list-style: none; margin: 0; padding: 0 0 0 14px; border: 0; max-height: none; overflow: visible; position: relative; font: 12px/1.5 var(--mono); }
+  .steps::before { content: ""; position: absolute; left: 3px; top: 6px; bottom: 6px; width: 1px; background: var(--rule); }
+  .steps li { display: grid; grid-template-columns: 52px 1fr; gap: 8px; padding: 3px 0; border: 0; position: relative; animation: task-in .3s ease-out; }
+  .steps li::before { content: ""; position: absolute; left: -14px; top: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--think); }
+  .steps li[data-done="false"]::before { animation: pulse 1s ease-in-out infinite; }
+  .steps li[data-done="true"]::before { background: var(--panel); border: 1.5px solid var(--think); width: 4px; height: 4px; }
+  .steps .tool { color: var(--think); font-weight: 600; letter-spacing: .04em; }
+  .steps .arg { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-result { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--rule); font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+          word-break: break-word; max-height: 168px; overflow: auto; animation: task-in .4s ease-out; }
+  .task-result .lead { display: block; font-weight: 600; margin-bottom: 2px; }
+  .task-result .more { color: var(--muted); }
+  .task[data-status="failed"] .task-result { color: var(--flare); }
+  li[data-kind="think"] span { color: var(--think); }
+  @keyframes scan { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+  @keyframes pulse { 50% { opacity: .25; transform: scale(.7); } }
+  @keyframes task-in { from { opacity: 0; transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .task, .steps li, .task-result, .task[data-status="running"]::before, .steps li[data-done="false"]::before { animation: none; }
+    .task[data-status="running"]::before { background: var(--think); }
+  }
+
+  @media (max-width: 1100px) {
+    main[data-tasks="on"] { display: block; max-width: 1080px; }
+    main[data-tasks="on"] > .tasks { position: static; max-height: none; margin-top: 28px; }
+    main[data-tasks="on"] .task-list { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); overflow: visible; }
+  }
+
   @media (max-width: 640px) {
     main { padding: 20px 14px 32px; }
     .lane, .ruler { grid-template-columns: 84px 1fr; }
@@ -136,6 +199,7 @@
         <option value="chatbot">聊天</option>
         <option value="simple_chat">本地聊天（MLX Gemma 4 E2B）</option>
         <option value="translator">实时翻译（中 → 英）</option>
+        <option value="stfr">快答慢想（后台任务）</option>
       </select>
     </label>
     <button id="call" type="button">开始通话</button>
@@ -146,6 +210,14 @@
       <label><input type="checkbox" id="opt-agc">自动增益</label>
     </fieldset>
   </div>
+
+  <section class="tasks" id="tasks" aria-labelledby="tasks-title" hidden>
+    <div class="tasks-head">
+      <h2 id="tasks-title">后台 · <b>THINKER</b></h2>
+      <span class="tasks-count" id="tasks-count" aria-live="polite"></span>
+    </div>
+    <div class="task-list" id="task-list"><div class="empty">让助手查点东西，比如“这周末上海有什么展览”。后台每一步在查什么、读了哪一页，都会实时显示在这里。</div></div>
+  </section>
 
   <div class="panels" id="panels">
     <section class="history" aria-labelledby="history-title">
@@ -196,6 +268,7 @@ const MODES = {
   chatbot: { title: "语音助手", subtitle: "WEBRTC · CHATBOT", bot: "助手", reply: "回答", history: true },
   simple_chat: { title: "本地聊天", subtitle: "WEBRTC · MLX GEMMA 4 E2B", bot: "助手", reply: "回答", history: true },
   translator: { title: "实时翻译", subtitle: "WEBRTC · 中 → 英", bot: "译文", reply: "翻译", history: false },
+  stfr: { title: "快答慢想", subtitle: "WEBRTC · FAST RESPONDER · SLOW THINKER", bot: "助手", reply: "回答", history: true, tasks: true },
 };
 const mode = () => MODES[$("mode").value];
 
@@ -205,6 +278,8 @@ function applyMode() {
   $("subtitle").textContent = m.subtitle;
   $("bot-name").textContent = m.bot;
   $("panels").dataset.history = m.history ? "on" : "off";
+  $("tasks").hidden = !m.tasks;
+  document.querySelector("main").dataset.tasks = m.tasks ? "on" : "off";
   document.title = `${m.title} · WebRTC`;
   localStorage.setItem("webrtc:mode", $("mode").value);
 }
@@ -223,6 +298,7 @@ const EVENTS = {
   stop: () => { log("bot", "服务端结束了通话"); hangUp(false); },
   latency: (e) => showLatency(e),
   conversation: (e) => renderConversation(e.turns),
+  tasks: (e) => renderTasks(e.tasks),
   bot_spoke: (e) => {
     // what the user actually heard of the reply: this is what goes into the conversation history
     if (!e.sentences) return;  // the TTS did not say which text it played
@@ -271,6 +347,108 @@ function renderConversation(turns) {
     chat.append(bot);
   });
   if (stick) chat.scrollTop = chat.scrollHeight;
+}
+
+/* ---------- background tasks: one card per task, updated in place so animations play once ---------- */
+const TOOLS = {
+  get_current_time: ["TIME", () => "看一下现在的时间"],
+  web_search: ["SEARCH", (a) => a.query],
+  web_fetch: ["READ", (a) => a.url.replace(/^https?:\/\//, "")],
+};
+const cards = new Map();   // task id -> {card, last: snapshot}
+let taskTicker = null;
+
+function taskState(t) {
+  if (t.status === "running") return "正在查";
+  if (t.status === "failed") return "没查到";
+  if (t.status === "cancelled") return "已取消";
+  return t.reported ? "已告诉你" : "查到了，等助手开口";
+}
+
+function secs(t) {
+  const end = t.finished ?? Date.now() / 1000;
+  return Math.max(0, end - t.started).toFixed(1);
+}
+
+function renderResult(t) {
+  const box = el("div", "task-result");
+  if (t.status === "failed") { box.textContent = t.error; return box; }
+  const [lead, ...rest] = (t.result || "").split("\n");
+  box.append(el("span", "lead", lead));
+  if (rest.length) box.append(el("span", "more", rest.join("\n").trim()));
+  return box;
+}
+
+function renderTasks(tasks) {
+  const list = $("task-list");
+  if (tasks.length) list.querySelector(".empty")?.remove();
+  const running = tasks.filter((t) => t.status === "running").length;
+  $("tasks-count").innerHTML = tasks.length ? `<b>${running}</b> 个在查 · 共 ${tasks.length} 个` : "";
+
+  for (const t of tasks) {
+    let entry = cards.get(t.id);
+    if (!entry) {
+      const card = el("article", "task");
+      const top = el("div", "task-top");
+      top.append(el("span", "state"), el("span", "clock"));
+      card.append(top, el("div", "task-q", t.instruction), el("ol", "steps"));
+      list.prepend(card);   // newest first
+      entry = { card, last: null };
+      cards.set(t.id, entry);
+      log("think", `后台开始查：${t.instruction}`);
+    }
+    const { card, last } = entry;
+    card.dataset.status = t.status;
+    card.dataset.reported = t.reported;
+    card.dataset.started = t.started;
+    card.dataset.finished = t.finished ?? "";
+    card.querySelector(".state").textContent = `#${t.id} · ${taskState(t)}`;
+    card.querySelector(".clock").textContent = `${secs(t)}s · ${t.steps.length} 步`;
+
+    const steps = card.querySelector(".steps");
+    t.steps.forEach((s, i) => {
+      let li = steps.children[i];
+      if (!li) {
+        const [tag, describe] = TOOLS[s.tool] || [s.tool.toUpperCase(), (a) => JSON.stringify(a)];
+        li = el("li");
+        const arg = el("span", "arg", describe(s.args || {}));
+        arg.title = arg.textContent;
+        li.append(el("span", "tool", tag), arg);
+        steps.append(li);
+      }
+      li.dataset.done = s.done;
+    });
+
+    if (t.status !== "running" && !card.querySelector(".task-result") && t.status !== "cancelled") {
+      card.append(renderResult(t));
+    }
+    if (last && last.status === "running" && t.status !== "running") {
+      log("think", t.status === "done" ? `后台查到了 #${t.id}，用时 ${secs(t)}s` : `后台 #${t.id} ${taskState(t)}`);
+    }
+    if (last && !last.reported && t.reported && t.status === "done") log("think", `助手说了 #${t.id} 的结果`);
+    entry.last = t;
+  }
+
+  if (running && !taskTicker) {
+    taskTicker = setInterval(() => {
+      let any = false;
+      for (const { card, last } of cards.values()) {
+        if (last.status !== "running") continue;
+        any = true;
+        card.querySelector(".clock").textContent = `${secs(last)}s · ${last.steps.length} 步`;
+      }
+      if (!any) { clearInterval(taskTicker); taskTicker = null; }
+    }, 100);
+  }
+}
+
+function resetTasks() {
+  cards.clear();
+  clearInterval(taskTicker);
+  taskTicker = null;
+  $("tasks-count").textContent = "";
+  $("task-list").innerHTML = "";
+  $("task-list").append(el("div", "empty", "让助手查点东西，比如“这周末上海有什么展览”。后台每一步在查什么、读了哪一页，都会实时显示在这里。"));
 }
 
 /* ---------- latency: speech end → first audio ---------- */
@@ -432,6 +610,7 @@ async function call() {
       startedAt = performance.now();
       latencyTotals = [];
       renderConversation([]);
+      resetTasks();
       setStatus("live", "通话中 0:00");
       timer = setInterval(() => {
         const s = Math.floor((performance.now() - startedAt) / 1000);

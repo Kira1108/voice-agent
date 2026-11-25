@@ -2,7 +2,7 @@
 
     GET  /webrtc                   the page (mic in, bot audio out, live two-track timeline)
     POST /webrtc/{agent}/offer     {"sdp", "type"} -> answer; agent is a key of AGENTS ("chatbot",
-                                   "simple_chat", "translator"); the session runs until either side hangs up
+                                   "simple_chat", "translator", "stfr"); the session runs until either side hangs up
 
 The pipelines are the same as the websocket routes'; only the transport differs.
 """
@@ -23,6 +23,7 @@ from app.plugins.llm.naive_agent import NaiveAgentComponent
 from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
 from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
 from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
+from app.plugins.llm.stfr import STFRComponent
 from app.plugins.llm.translator import SimulTranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent, TencentSTTComponent
 from app.plugins.tts.component import VolTTS2Component, VolTTSComponent
@@ -73,10 +74,21 @@ def simple_chat_components():
     ]
 
 
+def stfr_components():
+    """Chat with a fast responder that hands slow work to background thinkers (app/plugins/llm/stfr.py)."""
+    return [
+        TencentSTTComponent(),
+        BargeInAggregator(),
+        STFRComponent(model=local_llm_model(), thinker_model=local_llm_model()),
+        VolTTSComponent(VolTTS(speaker="S_1oFofbRk2")),
+    ]
+
+
 AGENTS = {
     "chatbot": chatbot_components,
     "translator": translator_components,
     "simple_chat": simple_chat_components,
+    "stfr": stfr_components,
 }
 
 # live sessions, so they are not garbage collected mid-call and can be closed on shutdown

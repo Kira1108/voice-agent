@@ -31,6 +31,7 @@ from app.frame import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     ConversationFrame,
+    TasksFrame,
     EventFrame,
     InterruptFrame,
     ReplyEndFrame,
@@ -222,7 +223,8 @@ class WebRTCOutput(PipelineComponent):
     playing a reply, like TransportOutput does from its playback estimate.
     """
 
-    control_frames = (StopFrame, InterruptFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame)
+    control_frames = (StopFrame, InterruptFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame,
+                      TasksFrame)
 
     def __init__(self, controller: SessionController | None = None, recorder: DualChannelRecorder | None = None):
         super().__init__(controller)
@@ -282,7 +284,7 @@ class WebRTCOutput(PipelineComponent):
             self.logger.info(
                 f"[#{frame.utterance_id}] interrupted, dropped {dropped} queued frame(s) and {secs:.1f}s of unplayed audio"
             )
-        elif isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame)):
+        elif isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, ConversationFrame, TasksFrame)):
             self.events.send(frame)
         else:
             await super().on_control(frame)

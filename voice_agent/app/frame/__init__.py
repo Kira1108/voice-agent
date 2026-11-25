@@ -8,6 +8,7 @@ from .events import (
     InterruptFrame,
     ReplyEndFrame,
     StopFrame,
+    TasksFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )

@@ -74,3 +74,10 @@ class ConversationFrame(EventFrame):
     turn, plus what each reply generated, so a page can show what was cut. Informational, for display."""
     event_type: Literal["conversation"] = Field(default="conversation", description = "type of the event frame")
     turns: list[dict] = Field(default_factory=list, description="ContextTurn snapshots, oldest first")
+
+
+class TasksFrame(EventFrame):
+    """Broadcast by a component that runs background tasks (app/plugins/llm/stfr.py) whenever one changes: every
+    task of the session with its steps, oldest first. Informational, for display."""
+    event_type: Literal["tasks"] = Field(default="tasks", description = "type of the event frame")
+    tasks: list[dict] = Field(default_factory=list, description="Task snapshots, oldest first")

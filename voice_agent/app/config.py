@@ -69,6 +69,11 @@ class Config:
         return self._get_env("OPENROUTER_API_KEY")
 
     @property
+    def deepseek_api_key(self):
+        """DeepSeek Search / Fetch APIs (app/plugins/llm/web_tools.py)."""
+        return self._get_env("DEEPSEEK_API_KEY")
+
+    @property
     def volc_tts_api_key(self):
         return self._get_env("VOLC_TTS_API_KEY")
 
