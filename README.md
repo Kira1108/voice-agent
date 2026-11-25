@@ -74,7 +74,7 @@ GitHub README 不支持直接播放这些音频，可点击链接下载收听。
 
 ## 快速开始
 
-当前版本面向 **Apple Silicon macOS、Python ≥ 3.10**。应用会导入 MLX 相关模块，即使选择云端语音服务，也需要可用的 MLX 环境。
+需要 **Python ≥ 3.10**。MLX 是可选依赖：只有用到本机模型时才需要（Qwen3 识别 / 合成、本地 LLM，仅支持 Apple Silicon macOS）。只用云端服务（腾讯识别 + OpenRouter + 火山 TTS）时不用装，服务照常启动。
 
 ### 1. 安装
 
@@ -85,7 +85,10 @@ python -m venv .venv
 source .venv/bin/activate
 brew install portaudio
 pip install -r requirements.txt
+pip install -r requirements-mlx.txt   # 可选：本机 MLX 模型，仅 Apple Silicon macOS
 ```
+
+没装 MLX 时，用到本机 Qwen3 识别 / 合成的会话（WebSocket 翻译 / 变声、WebRTC 的翻译模式）会在第一次用模型时报错，并提示安装 `requirements-mlx.txt`；`simple_chat` 需要先用 `mlx-lm` 起本地 LLM 服务（见下文）；其他模式不受影响。
 
 `portaudio` 用于依赖列表中的 PyAudio；浏览器通话本身不通过 PyAudio 采集麦克风。
 
@@ -161,7 +164,7 @@ voice_agent/models/
 
 仓库的模型复制脚本使用作者本机的缓存路径，使用前需要调整源路径和目标路径。STT / TTS 脚本中对应的模型分别为 `mlx-community/Qwen3-ASR-0.6B-8bit` 和 `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`。
 
-本地 LLM 通过独立进程提供 OpenAI 兼容接口。准备好权重并安装 `mlx-lm` 后，在仓库根目录的另一个终端运行：
+本地 LLM 通过独立进程提供 OpenAI 兼容接口。准备好权重并安装 `requirements-mlx.txt`（含 `mlx-lm`）后，在仓库根目录的另一个终端运行：
 
 ```bash
 bash bash_scripts/start_mlx_llm.sh
@@ -307,7 +310,7 @@ Pipeline(transport, [
 python -m pytest
 ```
 
-部分测试模块会导入 MLX，因此完整测试也需要可访问 Metal 的运行环境。
+测试不依赖 MLX，没装 MLX 的环境也能跑完整测试。
 
 ## 当前边界
 

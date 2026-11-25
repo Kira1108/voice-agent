@@ -3,16 +3,18 @@ import threading
 from pathlib import Path
 from typing import AsyncIterator
 
-import mlx.core as mx
 import numpy as np
 import soundfile as sf
 from loguru import logger as _logger
-from mlx_audio.tts.utils import load_model
 
 from app.config import get_config
-from app.plugins.mlx_runner import shared_runner
+from app.plugins.mlx_runner import import_mlx, shared_runner
 
 logger = _logger.bind(component="Qwen3TTS")
+
+
+def _load(model_path: str):
+    return import_mlx("mlx_audio.tts.utils").load_model(model_path)
 
 MIN_RMS = 0.04     # normal speech is about 0.1; near-silent output is below 0.03
 MAX_ATTEMPTS = 3
@@ -36,7 +38,7 @@ class Qwen3TTS:
         self.streaming_interval = streaming_interval
 
         # 共享的模型和工作线程，首次合成时才加载
-        self._runner = shared_runner("TTS", self.model_path, load_model)
+        self._runner = shared_runner("TTS", self.model_path, _load)
         self._executor = self._runner.executor
         self._sample_rate = None
         self._closed = False
@@ -65,6 +67,7 @@ class Qwen3TTS:
         return int((1.0 + seconds_per_char * len(text)) * 12.5)
 
     def _iter_chunks(self, text, max_tokens, cancelled=None):
+        mx = import_mlx("mlx.core")
         for result in self.model.generate_custom_voice(
             text=text,
             speaker=self.speaker,

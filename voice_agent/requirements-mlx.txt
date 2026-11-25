@@ -1,0 +1,8 @@
+# Optional: local models on MLX, Apple Silicon macOS only.
+#   pip install -r requirements.txt -r requirements-mlx.txt
+# Needed by: Qwen3 STT (/websocket/translator, /websocket/voice_changer, the WebRTC translator mode),
+# Qwen3 TTS (voice_changer), and the local LLM server (bash_scripts/start_mlx_llm.sh, the simple_chat mode).
+# Without them the server still starts; a session that uses one of these fails with an error saying so.
+mlx==0.31.2
+mlx-audio==0.5.8   # Qwen3 STT / TTS
+mlx-lm==0.31.3     # the local LLM server (python -m mlx_lm server)

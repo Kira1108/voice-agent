@@ -6,7 +6,11 @@ instead of each loading (and holding) its own copy of the model.
 
     runner = shared_runner("stt", model_path, load)
     model = runner.model_on_worker()   # only from code running on runner.executor
+
+MLX is an optional dependency (Apple Silicon macOS only, requirements-mlx.txt): it is imported when a model
+is loaded, not when the module is, so the server runs without it as long as no local model is used.
 """
+import importlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +20,17 @@ from typing import Any, Callable
 from loguru import logger as _logger
 
 logger = _logger.bind(component="MLXRunner")
+
+
+def import_mlx(module: str):
+    """Import an MLX package for a local model, or say how to install it."""
+    try:
+        return importlib.import_module(module)
+    except ImportError as e:
+        raise RuntimeError(
+            f"{module} is not installed: local MLX models (Qwen3 STT / TTS) need the optional MLX dependencies, "
+            "Apple Silicon macOS only: pip install -r requirements-mlx.txt"
+        ) from e
 
 
 class SharedModelRunner:

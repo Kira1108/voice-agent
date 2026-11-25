@@ -14,12 +14,11 @@ httpx==0.28.1
 # LLM (OpenRouter)
 pydantic-ai==2.54.0
 
-# Speech models: STT / TTS run locally with MLX, which needs Apple Silicon macOS
-mlx==0.31.2
-mlx-audio==0.5.8
+# Local MLX models (Qwen3 STT / TTS, the MLX LLM server) are optional: requirements-mlx.txt
 
-# VAD
+# VAD, smart turn (chatbot: has the user finished speaking?)
 onnxruntime==1.21.1
+transformers==5.19.0  # smart turn's feature extractor
 pyloudnorm==0.2.0
 
 # Audio / numerics

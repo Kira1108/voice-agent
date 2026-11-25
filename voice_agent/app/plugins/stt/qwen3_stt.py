@@ -5,12 +5,15 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from loguru import logger as _logger
-from mlx_audio.stt.utils import load
 
 from app.config import get_config
-from app.plugins.mlx_runner import shared_runner
+from app.plugins.mlx_runner import import_mlx, shared_runner
 
 logger = _logger.bind(component="Qwen3STT")
+
+
+def _load(model_path: str):
+    return import_mlx("mlx_audio.stt.utils").load(model_path)
 
 
 class Qwen3STT:
@@ -31,7 +34,7 @@ class Qwen3STT:
         self.sample_rate = sample_rate
 
         # 共享的模型和工作线程，首次推理时才加载
-        self._runner = shared_runner("STT", self.model_path, load)
+        self._runner = shared_runner("STT", self.model_path, _load)
         self._closed = False
 
     @property
