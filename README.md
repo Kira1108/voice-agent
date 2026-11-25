@@ -2,13 +2,14 @@
 
 ![Voice Agent](./samples/image.png)
 
-实时语音服务,目前有三个接口:
+实时语音服务,目前有四种模式:
 
 > 你不要以为这是抄袭pipecat或者livekit，不是的，仔细看，细节都不一样的，这是我的版本。
 
 - **实时翻译**:说中文,实时听到英文。
 - **变声**:说中文,听到另一个声音说的中文。
 - **语音助手(chatbot)**:和 LLM 语音对话。会等你把话说完再回答(smart turn),bot 说话时可以直接插话打断它(barge-in),说"闭嘴"立刻停。
+- **快答慢想(slow thinker, fast responder)**:前台助手马上回话,查资料、算东西这类慢活交给后台 thinker(会搜网页、读网页),可以同时查好几件事;查到了,没人说话就主动告诉你,有人在说话就留到下一句。页面右侧实时显示后台每一步在搜什么、读哪一页。见[快答慢想](#快答慢想apppluginsllmstfrpy)。
 
 ```
 translator / voice_changer:
@@ -16,6 +17,12 @@ translator / voice_changer:
 
 chatbot:
 麦克风 → WebSocket → 流式 STT(自带断句,有中间结果)→ 轮次管理 → 对话 LLM → TTS 流式合成 → WebSocket → 耳机
+
+stfr(快答慢想,WebRTC):
+麦克风 → WebRTC → 流式 STT → 轮次管理 → Responder(快)→ TTS 流式合成 → WebRTC → 耳机
+                                             │ delegate          ▲ 查到了
+                                             ▼                   │
+                                         Orchestrator ──▶ Thinker × N(搜索 / 读网页 / 取时间)
 ```
 
 整句 STT 用 Qwen3 在本机运行(Apple Silicon,MLX),流式 STT 用腾讯云实时语音识别。TTS 可以用本机的 Qwen3,也可以用火山引擎(豆包)的云端接口。LLM 走 OpenRouter,也可以用本机 MLX 跑的 Gemma 4 E2B(见[本地 LLM](#本地-llmmlx-gemma-4-e2b)),VAD 用 Silero,"用户说完没有"用 smart-turn 模型判断。各阶段是独立的组件,用 pipeline 串起来,可以任意替换。
@@ -274,7 +281,7 @@ python scripts/chatbot_mic.py --list-devices
 - 回复由服务端按 20 ms 一帧实时播出,所以 bot 开始 / 结束说话是精确的,不靠估算;打断时服务端直接清空没播的音频。
 - 页面上是一条实时双轨时间线:上面是你,下面是助手,开口、停口、打断都标在上面。每次通话也会录到 `output/recordings/chatbot_webrtc_*.wav`。
 - 麦克风只能在 `localhost` 或 https 下用。默认不配 STUN(本机 / 局域网够用);要过公网,在 `app/routers/webrtc.py` 的 `ICE_SERVERS` 和页面里都加上。
-- "快答慢想"模式(`stfr`):前台马上回话,慢活交给后台任务,有结果再告诉你。见[架构 / 快答慢想](#快答慢想appplugins-llmstfrpy)。
+- "快答慢想"模式(`stfr`):前台马上回话,慢活交给后台任务,有结果再告诉你。见[架构 / 快答慢想](#快答慢想apppluginsllmstfrpy)。
 
 ### 声音复刻页面
 
