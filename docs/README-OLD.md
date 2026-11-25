@@ -1,0 +1,611 @@
+# Voice Agent
+
+![Voice Agent](./samples/image.png)
+
+实时语音服务,目前有四种模式:
+
+> 你不要以为这是抄袭pipecat或者livekit，不是的，仔细看，细节都不一样的，这是我的版本。
+
+- **实时翻译**:说中文,实时听到英文。
+- **变声**:说中文,听到另一个声音说的中文。
+- **语音助手(chatbot)**:和 LLM 语音对话。会等你把话说完再回答(smart turn),bot 说话时可以直接插话打断它(barge-in),说"闭嘴"立刻停。
+- **快答慢想(slow thinker, fast responder)**:前台助手马上回话,查资料、算东西这类慢活交给后台 thinker(会搜网页、读网页),可以同时查好几件事;查到了,没人说话就主动告诉你,有人在说话就留到下一句。页面右侧实时显示后台每一步在搜什么、读哪一页。见[快答慢想](#快答慢想apppluginsllmstfrpy)。
+
+```
+translator / voice_changer:
+麦克风 → WebSocket → VAD 切句 → 整句 STT → LLM 翻译 / 直接 → TTS 流式合成 → WebSocket → 耳机
+
+chatbot:
+麦克风 → WebSocket → 流式 STT(自带断句,有中间结果)→ 轮次管理 → 对话 LLM → TTS 流式合成 → WebSocket → 耳机
+
+stfr(快答慢想,WebRTC):
+麦克风 → WebRTC → 流式 STT → 轮次管理 → Responder(快)→ TTS 流式合成 → WebRTC → 耳机
+                                             │ delegate          ▲ 查到了
+                                             ▼                   │
+                                         Orchestrator ──▶ Thinker × N(搜索 / 读网页 / 取时间)
+```
+
+整句 STT 用 Qwen3 在本机运行(Apple Silicon,MLX),流式 STT 用腾讯云实时语音识别。TTS 可以用本机的 Qwen3,也可以用火山引擎(豆包)的云端接口。LLM 走 OpenRouter,也可以用本机 MLX 跑的 Gemma 4 E2B(见[本地 LLM](#本地-llmmlx-gemma-4-e2b)),VAD 用 Silero,"用户说完没有"用 smart-turn 模型判断。各阶段是独立的组件,用 pipeline 串起来,可以任意替换。
+
+### 🎧 听一段
+
+几段会话录音,都是 16 kHz 双声道 mp3:**左声道是用户麦克风,右声道是 bot 播放的声音**,戴耳机听左右分得最清楚。
+
+**[samples/simple.mp3](./samples/simple.mp3)**:一段普通的 chatbot 对话(约 1 分 38 秒)。
+
+<audio controls src="./samples/simple.mp3"></audio>
+
+**[samples/talk2myself.mp3](./samples/talk2myself.mp3)**:和自己聊天(约 5 分 21 秒)。bot 用的是我用[声音复刻](#声音复刻页面)训练出来的我自己的声音,走 WebRTC 通话。
+
+<audio controls src="./samples/talk2myself.mp3"></audio>
+
+**[samples/father_daughter_piano.mp3](./samples/father_daughter_piano.mp3)**:父亲和女儿因为弹琴的事吵架(约 6 分 47 秒),走 WebRTC 通话。 【延迟中位数870ms】
+
+<audio controls src="./samples/father_daughter_piano.mp3"></audio>
+
+> GitHub 页面不能直接播放音频,点上面的链接进去下载即可。录音由 `DualChannelRecorder`(`app/audio/recorder.py`)生成,通话时默认开启,原始 wav 保存在 `output/recordings/`。
+
+## 快速开始
+
+```bash
+cd project
+pip install -r requirements.txt            # 需要 Apple Silicon macOS, Python >= 3.10
+export OPENROUTER_API_KEY=sk-...           # LLM
+export VOLC_TTS_API_KEY=...                # 火山 TTS(translator、chatbot 用)
+export DEEPSEEK_API_KEY=...                # 快答慢想后台的搜索 / 读网页(可选)
+export TENCENT_ASR_SECRET_ID=...           # 腾讯流式 STT(chatbot 用)
+export TENCENT_ASR_SECRET_KEY=...
+export TENCENT_ASR_APPID=...               # 可选,有默认值
+uvicorn app.main:app --port 8000
+```
+
+启动后浏览器打开 `http://localhost:8000/` 就是总入口:左侧选 **Voice Agent**(聊天 / 翻译,即 `/webrtc`)或 **声音复刻**(`/voice_clone`)。切换不会打断正在进行的通话或录音,另一个 tab 上会亮"通话中 / 录音中"。两个页面也可以单独打开。以后加页面,在 `app/static/index.html` 的 `PAGES` 里加一行。
+
+以上环境变量也可以写进 `~/.env`。
+
+模型文件放在 `project/models/` 下:`stt/qwen3-stt`、`tts/qwen3-tts`、`vad/silero_vad.onnx`、`turn/smart-turn.onnx`;用本地 LLM 的话还有 `llm/gemma-4-e2b-it-qat-4bit`。
+
+本机的 Qwen3 STT、TTS 模型在整个进程里只加载一次:第一次用到时加载(首句会慢几秒),之后所有会话共用,推理在各自的专用线程里排队执行(`app/plugins/mlx_runner.py`);smart-turn 模型也是第一次用到时加载。
+
+**用了代理 / VPN 的话**:腾讯语音识别会拒绝它认为是境外的请求(错误码 6001,"请检查是否开通跨境流量")。Clash 之类的工具要用**规则模式**(全局模式下规则不生效),并让 `asr.cloud.tencent.com` 直连;火山的 `openspeech.bytedance.com` 也建议直连。
+
+## 接口
+
+| 地址 | 作用 | 组件 |
+| --- | --- | --- |
+| `ws://<host>:8000/websocket/translator` | 中文语音 → 英文语音 | VAD → Qwen3 STT → 翻译 LLM → 火山 TTS |
+| `ws://<host>:8000/websocket/voice_changer` | 中文语音 → 中文语音(变声) | VAD → Qwen3 STT → Qwen3 TTS |
+| `ws://<host>:8000/websocket/chatbot` | 语音助手,smart turn + 打断 | 腾讯流式 STT → 轮次管理(`BargeInAggregator`)→ 对话 LLM → 火山 TTS |
+
+三个接口的协议完全一样,只是服务端的组件组合不同。
+
+### 客户端发送
+
+| 类型 | 内容 |
+| --- | --- |
+| 二进制 | 原始 PCM:**16 kHz、单声道、int16 小端**。分块大小不限,建议每块 20 到 100 ms,**按实时速度持续发送**(静音也要发:流式 STT 超过 6 秒收不到音频会断开,服务端会自动重连) |
+| 文本(JSON) | `{"event_type": "stop"}` 结束会话 |
+
+### 服务端返回
+
+| 类型 | 内容 |
+| --- | --- |
+| 二进制 | 合成的语音:**24 kHz、单声道、int16 小端**。**流式返回**:一句回复会拆成很多小块,边合成边发,按顺序到达,直接按顺序拼起来播放即可 |
+| 文本(JSON) | 事件,见下表 |
+
+所有事件都带 `id`、`event_type`、`timestamp`(毫秒)字段:
+
+| `event_type` | 含义 | 客户端应该做什么 |
+| --- | --- | --- |
+| `reply_end` | 一轮回复的音频已经全部发完,带 `utterance_id` | 可选:用来显示"回复完毕" |
+| `interrupt` | 当前回复被打断(只有 chatbot 会发),带 `utterance_id` | **清空本地还没播放的音频** |
+| `stop` | 会话结束确认 | 关闭连接 |
+
+### 会话流程
+
+1. 连接后直接发送音频,不需要握手。
+2. 服务端检测每一句话的结束:translator / voice_changer 用 Silero VAD(约 0.2 秒静音),chatbot 用腾讯 STT 自带的断句(约 0.6 秒静音)。然后识别、处理、合成,把回复的语音流式发回,最后发一个 `reply_end`。
+3. 结束时发送 `{"event_type": "stop"}`,服务端回一条 stop 事件后关闭连接。直接断开连接同样会结束会话。
+
+注意:`stop` 会立即生效,还没处理完的话会被丢弃,所以要先等回复播完再发。
+
+### chatbot 的轮次规则
+
+**等你说完再回答(smart turn)。** 停顿一下就会切成一句,所以"我想问一下……明天天气怎么样"会被切成好几句。每来一句,先合并进"草稿",再让 smart-turn 模型听一遍整段草稿的声音,判断你说完没有:
+
+- 🟢 说完了 → 整段交给 LLM;
+- 🔴 没说完 → 再等 1.5 秒(`turn_wait_secs`),期间你接着说就合并进来重新判断,一直没说就把草稿交出去;
+- ⏸️ 只要你还在说话,就不会交出去,也不会计时。
+
+**bot 忙的时候**(从交给 LLM 开始,到客户端**播放完**回复为止;服务端按已发出音频的时长估算,另加 0.3 秒余量),根据流式 STT 的**中间结果**判断你是不是在插话:
+
+| 你说的 | 结果 |
+| --- | --- |
+| 包含"闭嘴" | 立刻打断,这句话本身不会发给 LLM |
+| 附和:"嗯嗯""对对对""好的""明白"…… | 不打断,bot 接着说 |
+| 其他话(去掉标点后 ≥ 2 个字) | ✋ **打断**,这句话成为你的下一轮 |
+
+打断时服务端取消 LLM 和 TTS、清掉没发出的音频,然后给客户端发 `interrupt`。如果 bot 还在**思考**(没开口)就被打断,说明你是在接着上一句说,两段会合并成一轮重新交给 LLM。
+
+对话历史保存在会话里,多轮对话有上下文。被打断的那一轮不会记入历史。
+
+更详细的说明(带图,用"闹钟"比喻讲清楚各种等待和取消):[project/app/plugins/turn/docs/README.md](project/app/plugins/turn/docs/README.md)。
+
+### 客户端实现要点
+
+**收消息和播放必须分开。** 服务端发得比实时快,一句话几百毫秒就能发完。如果在收消息的循环里同步播放,websocket 读得太慢会堆积,客户端的心跳 pong 也读不到,20 秒后连接会因为 `keepalive ping timeout` 断开。正确做法是:收到音频就放进本地队列,另一个任务按播放速度从队列里取出来播放。收到 `interrupt` 时清空这个队列即可。
+
+```python
+import asyncio, json, websockets
+
+async def main():
+    url = "ws://localhost:8000/websocket/chatbot"
+    async with websockets.connect(url, max_size=None) as ws:
+        playback = asyncio.Queue()
+
+        async def send():
+            for chunk in mic_chunks():               # 16 kHz int16 PCM, 每块 20 ms
+                await ws.send(chunk)
+                await asyncio.sleep(0.02)
+
+        async def play():
+            while True:
+                chunk = await playback.get()
+                await asyncio.to_thread(play_blocking, chunk, 24000)   # 阻塞播放放进线程
+
+        sender = asyncio.create_task(send())
+        player = asyncio.create_task(play())
+
+        async for msg in ws:                          # 只负责收,不等播放
+            if isinstance(msg, bytes):
+                playback.put_nowait(msg)
+            elif json.loads(msg)["event_type"] == "interrupt":
+                while not playback.empty():           # 打断:丢掉没播的音频
+                    playback.get_nowait()
+        sender.cancel(); player.cancel()
+
+asyncio.run(main())
+```
+
+### 示例:实时翻译
+
+把一段中文语音按实时速度发给 `/websocket/translator`,边收边存下英文语音。只依赖 `websockets`、`numpy`、`soundfile`,任意 wav 都行(会自动转成 16 kHz 单声道)。项目里也有同一份文件:`project/scripts/translate_file.py`。
+
+```bash
+pip install websockets numpy soundfile
+python translate_file.py 中文.wav 英文.wav --url ws://<host>:8000/websocket/translator
+# sentence 1 translated
+# sentence 2 translated
+# saved 5.1s of English speech to 英文.wav
+```
+
+```python
+"""Send a Chinese speech file to the translator, save the English speech that comes back.
+
+    pip install websockets numpy soundfile
+    python translate_file.py input.wav output.wav --url ws://localhost:8000/websocket/translator
+"""
+import argparse
+import asyncio
+import json
+
+import numpy as np
+import soundfile as sf
+import websockets
+
+SEND_RATE = 16000    # what the server expects: 16 kHz, mono, int16
+REPLY_RATE = 24000   # what the server sends back: 24 kHz, mono, int16
+CHUNK_MS = 20
+
+
+def load_pcm16(path: str) -> bytes:
+    audio, rate = sf.read(path, dtype="float32", always_2d=True)
+    audio = audio.mean(axis=1)                                   # to mono
+    if rate != SEND_RATE:                                        # simple linear resampling to 16 kHz
+        n = int(len(audio) * SEND_RATE / rate)
+        audio = np.interp(np.linspace(0, len(audio), n, endpoint=False), np.arange(len(audio)), audio)
+    audio = np.concatenate([audio, np.zeros(SEND_RATE)])         # 1 s of silence so the last sentence ends
+    return (np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes()
+
+
+async def main(args):
+    pcm = load_pcm16(args.input)
+    replies = []
+
+    async with websockets.connect(args.url, max_size=None) as ws:
+        async def send():
+            step = SEND_RATE * 2 * CHUNK_MS // 1000
+            for i in range(0, len(pcm), step):
+                await ws.send(pcm[i:i + step])
+                await asyncio.sleep(CHUNK_MS / 1000)             # real-time pace, like a microphone
+
+        sender = asyncio.create_task(send())
+        try:
+            while True:
+                # no new message for a while after the audio was sent: assume everything was translated
+                msg = await asyncio.wait_for(ws.recv(), timeout=None if not sender.done() else args.idle)
+                if isinstance(msg, bytes):
+                    replies.append(msg)                          # English speech, streamed in small chunks
+                elif json.loads(msg)["event_type"] == "reply_end":
+                    print(f"sentence {json.loads(msg)['utterance_id']} translated")
+        except asyncio.TimeoutError:
+            pass
+        await sender
+        await ws.send(json.dumps({"event_type": "stop"}))
+
+    audio = np.frombuffer(b"".join(replies), dtype=np.int16)
+    sf.write(args.output, audio, REPLY_RATE, subtype="PCM_16")
+    print(f"saved {len(audio) / REPLY_RATE:.1f}s of English speech to {args.output}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", help="Chinese speech, any wav (converted to 16 kHz mono)")
+    parser.add_argument("output", help="where to save the English speech (24 kHz wav)")
+    parser.add_argument("--url", default="ws://localhost:8000/websocket/translator")
+    parser.add_argument("--idle", type=float, default=10, help="seconds to wait for more replies after sending")
+    asyncio.run(main(parser.parse_args()))
+```
+
+要点:
+
+- **每句话独立翻译**:你说多句话,就会依次收到多段英文语音,每段结束时有一个 `reply_end`(带 `utterance_id`)。
+- **英文语音是流式返回的小块**,按收到的顺序拼起来就是完整的音频;要实时播放,就照上面"客户端实现要点"那样放进队列边收边播。
+- 要用麦克风实时说、耳机实时听,直接用 `python scripts/voice_changer_mic.py --url ws://<host>:8000/websocket/translator`。
+
+### 测试脚本
+
+```bash
+cd project
+# 发送一个 wav 文件,结束后播放回复(--idle:多少秒没收到数据就结束,默认 30)
+python scripts/voice_changer_client.py --url ws://localhost:8000/websocket/translator
+
+# 对着麦克风说话,实时播放(默认内置麦克风 + 耳机)
+python scripts/voice_changer_mic.py --url ws://localhost:8000/websocket/translator
+
+# 语音助手,支持打断;请戴耳机
+python scripts/chatbot_mic.py
+
+# 列出音频设备,--input-device / --output-device 可以写编号或名称的一部分
+python scripts/chatbot_mic.py --list-devices
+```
+
+**测 chatbot 请戴耳机。** 外放时麦克风会录到 bot 自己的声音,被识别成文字后,超过 2 个字就会打断它自己(还没有做回声过滤)。
+
+### WebRTC 页面
+
+不想装 PyAudio、或者想外放测试,直接用浏览器:启动服务后打开 `http://localhost:8000/webrtc`,点"开始通话"。
+
+- 走 WebRTC(`app/transport/webrtc.py`),pipeline 和 `/websocket/chatbot` 一样,只换了 transport。信令是 `POST /webrtc/chatbot/offer`。
+- 浏览器自带回声消除和降噪(页面上可以开关),外放也不容易打断自己。
+- 回复由服务端按 20 ms 一帧实时播出,所以 bot 开始 / 结束说话是精确的,不靠估算;打断时服务端直接清空没播的音频。
+- 页面上是一条实时双轨时间线:上面是你,下面是助手,开口、停口、打断都标在上面。每次通话也会录到 `output/recordings/chatbot_webrtc_*.wav`。
+- 麦克风只能在 `localhost` 或 https 下用。默认不配 STUN(本机 / 局域网够用);要过公网,在 `app/routers/webrtc.py` 的 `ICE_SERVERS` 和页面里都加上。
+- "快答慢想"模式(`stfr`):前台马上回话,慢活交给后台任务,有结果再告诉你。见[架构 / 快答慢想](#快答慢想apppluginsllmstfrpy)。
+
+### 声音复刻页面
+
+打开 `http://localhost:8000/voice_clone`:在浏览器里照着朗读稿录一段(可暂停、继续、重录),或者上传一个音频文件,在下拉框里选一个槽位后点"开始复刻",训练完可以直接试听。
+
+- **我的音色**:页面顶部列出你的所有槽位,每次打开都实时向火山查询状态:已训练 / 空槽位 / 训练中、剩余训练次数。点开能看配置(训练时间、样本语种、试听文本、声音复刻 1.0 和 2.0 各自的试听)和代码里的用法(`VolTTS(speaker="S_xxx")`),也能改名字、写备注、从列表移除(只是不显示,火山上的音色不受影响)。新买的槽位在底部添加。
+- **槽位和名字存在本地**:`voice_agent/voices.json`(已在 `.gitignore`,槽位属于某个账号)。复刻时填的名字会写进去;火山只知道 `S_` 编号,不知道是谁的声音。
+- **复刻选槽位**:下拉框里空槽位排在前面;选已经训练过的槽位会提示"会覆盖"和剩余次数,提交前再确认一次。
+- 录音在浏览器里转成 24 kHz 单声道 16-bit wav 再上传,最长 3 分钟(火山限制 10MB);建议 10–30 秒。
+- 接口:`POST /voice_clone`(multipart 表单,字段说明见 `app/routers/voice_clone.py`)、`GET /voice_clone/status`、`GET /voice_clone/voices`、`PUT` / `DELETE /voice_clone/voices/{speaker_id}`。调用逻辑在 `app/plugins/voice_clone/seed.py`,也可以命令行用:`python -m app.plugins.voice_clone.seed 样本.wav --speaker-id S_xxx`。
+- 用的是 `VOLC_TTS_API_KEY`。预付费音色填控制台里的 `S_` 编号;后付费自定义名需要在控制台另外开通。
+
+### 本地 LLM(MLX Gemma 4 E2B)
+
+对话 LLM 可以不走云端,用本机 MLX 跑 Google 的 Gemma 4 E2B(QAT 4bit)。它跑在一个**单独的进程**里(mlx-lm 自带的 OpenAI 兼容服务),项目通过 HTTP 调用,不和应用里的 Qwen3 STT / TTS 抢同一个 MLX 线程,也可以单独重启。
+
+**1. 准备模型**(约 4GB,放在 `models/llm/gemma-4-e2b-it-qat-4bit`,已在 `.gitignore` 里):
+
+```bash
+python -c "from mlx_lm import load; load('mlx-community/gemma-4-E2B-it-qat-4bit')"   # 下载到 HF 缓存
+bash bash_scripts/copy_file_gemma4_e2b.sh                                             # 复制到 models/llm/(脚本里的快照路径按实际改)
+```
+
+**2. 启动服务**(另开一个终端,一直开着):
+
+```bash
+bash bash_scripts/start_mlx_llm.sh     # = python -m mlx_lm server --model models/llm/gemma-4-e2b-it-qat-4bit --port 8091
+```
+
+服务在收到第一个请求时才加载模型,第一句会慢几秒。
+
+**3. 在 pipeline 里用**:
+
+```python
+from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
+NaiveAgentComponent(model=mlx_llm_model())
+```
+
+WebRTC 页面的"本地聊天(MLX Gemma 4 E2B)"模式(`simple_chat`)就是这样接的,也可以直接打开 `/webrtc?mode=simple_chat`。
+
+**要点:**
+
+- **思考模式默认关闭**:Gemma 4 默认会先输出一大段英文推理过程("Thinking Process ..."),会被念出来,首句也慢。`mlx_llm_model()` 通过 `chat_template_kwargs: {"enable_thinking": false}` 关掉;要打开传 `enable_thinking=True`。
+- **`model_name` 默认是 `"default_model"`**:即服务启动时 `--model` 指定的模型,不会触发重新加载。传别的路径或 repo,服务会换成那个模型。
+- **不走代理**:访问本地服务的请求忽略 `HTTP(S)_PROXY`。否则开着 Clash 又没设 `NO_PROXY` 时,服务没起会变成代理返回的 502,还要等十几秒。
+- **服务没起时马上失败**:不重试、连接超时 2 秒,bot 立刻回一句"系统出了点毛病",日志里会有 `MLX LLM server not reachable at ...: start it with bash bash_scripts/start_mlx_llm.sh`。看到这行就是忘了启动服务。
+- **地址**:默认 `http://127.0.0.1:8091/v1`,用环境变量 `MLX_LLM_BASE_URL` 改。
+- **性能**(M2 Max):峰值内存约 3.5GB,首句约 0.3–0.5 秒,生成约 100 token/s。E2B 回答简单问题够用、延迟低,但明显不如大模型聪明;要更好可以换 E4B(`mlx-community/gemma-4-E4B-it-qat-4bit`),做法相同。
+
+## 测试
+
+```bash
+cd project
+python -m pytest          # 轮次管理的各个场景 + 小零件,约 1 秒,不需要模型和网络
+```
+
+## 日志
+
+用 loguru。`LOG_LEVEL=DEBUG uvicorn app.main:app` 看更多细节(包括 STT 的每个中间结果),`TRACE` 会打印每个 VAD 块。每句话的日志带 `[#n]` 编号,包含:
+
+- STT、LLM 的耗时,LLM 首句的耗时(`LLM +1.99s: ...`);流式 STT 的最终结果会写明说完后多久拿到(`STT final ... after speech ended`);
+- TTS 首块耗时(`TTS first chunk`)和整句耗时、RTF;
+- 端到端延迟:从说完话到**第一块音频发出**(`first audio sent ... after speech ended`,用户实际感受到的延迟),以及到整轮回复发完(`reply finished`);拆解见下面的[延迟拆解](#延迟拆解);
+- chatbot 的轮次决策,带红绿灯方便搜索:
+
+| 日志 | 意思 |
+| --- | --- |
+| `smart turn 25ms: p=0.14 ...` | smart-turn 模型的判断结果和耗时 |
+| 🔴 `TURN NOT DONE` / 🟢 `TURN DONE` / ⏸️ `TURN HELD` | 没说完、说完了、你还在说先不交 |
+| ⏸️ `user speaking again, wait paused` | 你又开口了,等待暂停 |
+| `user turn: ...` | 交给 LLM 的一轮 |
+| ✋ `BARGE-IN while bot thinking / speaking` | 插话打断 |
+| `interrupting reply to #n` | 打断(插话或"闭嘴") |
+| `dropped, bot thinking / bot speaking` | bot 忙时的附和等,被丢掉 |
+| ⏱ `speech end → first audio ...` | 这一轮的延迟拆解 |
+
+### 延迟拆解
+
+每一轮都会算"**你说完 → 听到第一个字**"的总延迟,并拆到各个环节(`app/metrics/latency.py`):
+
+```
+说完 ─VAD─▶ VAD 判停 ─STT─▶ 识别结果 ─turn─▶ 交给 LLM ─LLM─▶ 首句 ─TTS─▶ 首包音频 ─out─▶ 开始播放
+```
+
+| 环节 | 含义 |
+| --- | --- |
+| VAD | 只在本地 VAD 切句时有:VAD 确认说完要等的静音(`stop_secs`,默认 0.2s) |
+| STT | 说完到拿到最终识别结果 |
+| turn | 轮次判断:smart turn,以及"没说完、再等等"的等待(1.5s 的等待会算在这里) |
+| LLM | 大模型吐出第一句(翻译是整句译文) |
+| TTS | 那一句的第一块音频 |
+| out | transport:排队、重采样、按 20ms 播出。WebRTC 是**实际开始播放**的时刻;WebSocket 是发出的时刻 |
+
+在哪里看:
+
+- **日志**,每轮一行:`[#2] ⏱ speech end → first audio 1.09s = STT 0.20 + turn 0.03 + LLM 0.51 + TTS 0.34 + out 0.01`;
+- **会话结束**时一行汇总(p50/p90):`latency over 5 turn(s), p50/p90 s: total 0.87/1.09; STT 0.18/0.20, turn 0.03/0.03, LLM 0.34/0.51, ...`;
+- **WebRTC 页面**:事件列表里每轮一条彩色分段条(统一按 3 秒满格,方便对比),右上角显示最近一轮和中位数。
+
+实测(M2 Max,`simple_chat`:腾讯流式 STT + smart turn + MLX Gemma 4 E2B + 火山 TTS,5 轮):**p50 0.87s / p90 1.09s**,其中识别约 0.18s、轮次判断 0.03s、LLM 首句约 0.34s、TTS 首包约 0.33s、播出 0.01s。
+
+**看数时注意:**
+
+- 没算进去的:麦克风采集和上行网络(说完之前)、下行网络、浏览器抖动缓冲和播放(开始播放之后)。本机 WebRTC 大约还要再加 0.1–0.2 秒。
+- **out 很大通常是在排队**:比如翻译模式,上一句译文还在播,下一句译文已经好了,只能排在后面。这是真实的等待,不是 transport 慢。
+- 每个会话第一句会包含模型加载(如本地 Qwen3 STT 第一句 STT 3 秒多),看汇总时忽略第一轮或多跑几轮。
+- 被打断、被合并到下一句、或没有回复的轮次不会出报告。
+
+要给新组件加埋点,一行:`mark(self.controller, frame.utterance_id, "llm_first")`(`from app.metrics.latency import mark`)。
+
+## 架构
+
+### 数据帧(`app/frame/`)
+
+数据按顺序在 pipeline 里流动:
+
+| 帧 | 字段 | 说明 |
+| --- | --- | --- |
+| `AudioFrame` | `audio_data`、`sample_rate`、`is_first`、`is_end`、`audio_start`、`audio_end` | 输入端是一整句话的 16 kHz PCM;TTS 输出端是一小块音频。`sample_rate` 由产出方填写,transport 用它估算播放时长 |
+| `TextFrame` | `text` | 一整段文字,翻译、轮次管理输出这种帧 |
+| `TextAudioFrame` | `TextFrame` 的字段 + `audio_data`、`sample_rate`、`audio_start`、`audio_end` | **STT 的输出**:一句话的文字连同它的音频。是 `TextFrame` 的子类,只要文字的下游不用改。`merge()` 把多句拼成一轮 |
+| `InterimTextFrame` | `text`、`audio_start`、`audio_end` | 流式 STT 的中间结果(还会变)。**故意不是 `TextFrame`**,只有关心它的组件(打断)才会处理,其他组件自动忽略 |
+| `TextStreamFrame` | `text`、`is_first`、`is_end` | LLM 流式输出,一帧一句。整轮回复的最后会额外发一个 `text=""`、`is_end=True` 的结束帧 |
+
+所有帧都带 `utterance_id`(对应第几句用户输入)和 `origin_ts`(这句话说完的墙上时间),用于日志和延迟统计。
+
+**音频时钟**:`audio_start` / `audio_end` 是这段语音在会话输入音频流里的位置(秒),按"收到的样本数 ÷ 采样率"计算,不是墙上时间。VAD 和流式 STT 都按这个时钟填写,所以两种来源的帧格式完全一样。
+
+**一条边界**:轮次管理之前是"用户侧",每句话的文字、音频、时间都对齐地保留着;轮次管理把一轮交给 LLM 时转成纯 `TextFrame`,之后是"助手侧",不再带用户的音频。
+
+`is_first` / `is_end` 标记一整轮回复的开始和结束,一直传到 transport:首块音频用来统计首包延迟,结束帧变成发给客户端的 `reply_end`。普通 `TextFrame` 进入 TTS 时,按"整轮回复只有这一段"处理。
+
+### 控制事件(`app/control/`)
+
+停止、打断这类需要立即生效的事件不走 pipeline,而是由组件上报给会话级的 `SessionController`,再广播给订阅了它的组件:
+
+| 事件 | 谁发 | 谁订阅 |
+| --- | --- | --- |
+| `StopFrame` | transport(客户端 stop / 断开)、出错的组件 | 所有组件 |
+| `UserStartedSpeakingFrame` | VAD(刚听到人声时)或流式 STT(一句话开始时) | smart turn 轮次管理:暂停等待 |
+| `UserStoppedSpeakingFrame` | VAD(一句说完或误触发)或流式 STT(一句话结束时) | smart turn 轮次管理:兜底恢复等待 |
+| `BotStartedSpeakingFrame` | transport,回复的第一块音频发出时 | 轮次管理 |
+| `BotStoppedSpeakingFrame` | transport,估算客户端播放完时 | 轮次管理 |
+| `InterruptFrame` | 轮次管理 | LLM、TTS、transport 输出端 |
+
+组件在类属性 `control_frames` 里声明要订阅哪些事件。组件基类 `PipelineComponent` 对 `InterruptFrame` 的默认处理是:取消正在处理的帧,丢弃队列里积压的帧,然后继续运行。被取消的帧不算错误。transport 输出端是例外:它不取消正在发送的那一块(避免把一条 websocket 消息切成两半),只丢掉积压的音频,再把 `interrupt` 事件按顺序发给客户端。
+
+用户开口/停口事件走 controller 而不是 pipeline:轮次管理在 STT 后面,如果走 pipeline,会排在 STT 正在处理的数据后面被耽误。
+
+### 轮次管理(`app/plugins/turn/`)
+
+放在 STT 和 LLM 之间,决定哪句用户输入能成为一轮对话。一层一层继承,每层只多做一件事:
+
+```
+UserUtteranceAggregator             状态(bot 忙不忙、在思考还是在说话)、120 秒看门狗、start_turn / interrupt_bot / overlapped_bot
+└── DropWhileBotBusyAggregator      bot 忙就丢
+    └── KeywordInterruptAggregator  + "闭嘴"打断
+        └── SmartTurnKeywordInterruptAggregator
+                                    + 草稿(pending)、smart-turn 模型、"再等等"计时、监听用户开口/停口
+            └── BargeInAggregator   + 根据中间结果插话打断、过滤附和、思考阶段被打断时合并上一轮   ← chatbot 用这个
+```
+
+扩展点(钩子):`on_user_text`(收到一句话)、`accept_utterance`(这句话要回应时怎么处理)、`on_interim_text`(中间结果,默认忽略)。附和字表、停止词、最少字数、等待时间都可以调。
+
+详细说明见 [turn/docs/README.md](project/app/plugins/turn/docs/README.md)。
+
+### 对话上下文(`app/context/`)
+
+对话历史**只记用户实际听到的**。LLM 生成完一整段回复,但 bot 说到一半被打断的话,没播出去的部分不进历史,模型下一轮就不会以为自己说完了。历史不再由 LLM(pydantic-ai)自己管,而是单独一个 `ConversationContext`:
+
+```
+LLM 收到一轮 ──────────────── 用户消息 ───────────┐
+LLM 生成完 ─────────────────  回复(暂存)─────────┤
+TTS:每句第一块音频带上这句的文字(AudioFrame.text)  ▼
+transport:记每句播了多少 ── 播完 / 被打断 ──▶ BotSpokeFrame ──▶ ConversationContext ──▶ 下一轮 LLM 只读
+```
+
+- **谁知道播了多少**:只有 transport。WebRTC 由服务端逐帧播出,精确到 20ms;WebSocket 按播放时间估算。播放记账在 `app/transport/spoken.py`,两个 transport 共用。一轮结束(播完或被打断)时,通过 controller 发出 `BotSpokeFrame`:每句话和它被播出的比例。WebRTC 页面上也会显示"实际说的"和"被打断,听到 n/m 句"。
+- **在页面上看**:context 每次变化(用户这一轮进来、回复生成完、播放结果回来)都会发一个 `ConversationFrame`,带上完整历史,WebRTC 页面在"对话历史"里显示成聊天记录:就是大模型下一轮看到的内容,生成了但没播出去的部分划掉显示。翻译模式没有对话历史,不显示这一栏。
+- **记成什么**:被打断的回复只保留**完整听到的句子**,后面加"（被打断）"。一个 TTS 片段里有好几句时(LLM 吐得快,几句一起送去合成),按字数比例拆开算。可以改成连半句一起截(`ConversationContext(partial="cut")`,截断处加"…")。一句都没听到就不记回复,前后两轮用户的话合并成一条,保证用户 / 助手交替(Gemma 等模型的模板要求交替)。
+- **兜底**:transport 没报告的话(比如某个 transport 不支持,或 TTS 没标句子,如 `VolTTS2`),就用生成的全文,和以前一样。所以默认开启也不会比以前差。
+- **思考阶段被打断**:`BargeInAggregator` 会把上一轮重新放回草稿、和新的一句合并。context 发现新一轮以上一轮没被回答的话开头,就替换掉它,同一句话不会出现两次。
+- **上限**:默认最多保留 50 轮(`max_turns`)。
+- **pydantic-ai 的坑**:自己传 `message_history` 时,`Agent(system_prompt=...)` 不会被加进请求(会丢)。所以 `NaiveAgentRunner` 改用 `instructions=`,每次都会带上。
+
+用法:`NaiveAgentComponent` 默认就带一个 context,不用改。要配置就传 `NaiveAgentComponent(model=..., context=ConversationContext(max_turns=20, partial="cut"))`;要退回旧行为(生成多少记多少)传 `context=False`。翻译、变声不用 LLM 对话,不受影响。
+
+### 快答慢想(`app/plugins/llm/stfr.py`)
+
+Slow thinker, fast responder。语音对话里,前台不能让用户干等:查询、计算、多步推理这些慢活,交给后台去做,前台先回一句"我帮你查一下",继续陪用户说话;后台有了结果,再由前台用口语转述。
+
+```
+用户 ⇄ Responder ── delegate / cancel_task / show_task / list_tasks ──▶ Orchestrator ──▶ Thinker × N
+          ▲                                                                 │
+          └──────────────── 任务结束(进组件自己的队列)◀────────────────────┘
+```
+
+它只是一个新组件 `STFRComponent`,和 `NaiveAgentComponent` 一样 `TextFrame` 进、`TextStreamFrame` 出,pipeline、TTS、transport、轮次管理、`ConversationContext` 都不变。组件内部四个角色:
+
+| 角色 | 是什么 | 职责 |
+|---|---|---|
+| **Responder** | 前台 LLM(流式) | 和用户说话。自己不做慢活:用 `delegate` 给后台发一条能单独看懂的文本指令,马上拿到任务编号就返回;用户问进度时查 `list_tasks` / `show_task`,不要了就 `cancel_task` |
+| **Orchestrator** | 普通代码,不是 LLM | 任务表。每个任务起一个后台 asyncio 任务跑 thinker,最多同时 `max_tasks` 个(默认 5);任务结束时回调组件 |
+| **Task** | 一次委派 | 指令、状态(running / done / failed / cancelled)、结果,以及**是否已经告诉用户**——这个标记决定了结果什么时候说、会不会重复说 |
+| **Thinker** | 后台 LLM | 收到指令 + 委派那一刻的对话记录,执行一个任务,写一份给 responder 的资料:先一句话回答,再列关键细节(人名、地名、时间、数字、事件)。有自己的工具(`THINKER_TOOLS`):`get_current_time`,以及 DeepSeek 的 `web_search` / `web_fetch`(`web_tools.py`,要 `DEEPSEEK_API_KEY`);用 `thinker_tools=[...]` 换 |
+
+**结果怎么回到用户**——不靠 responder 轮询,而是任务结束时主动通知组件:
+
+- **主动说**:任务结束时用户和 bot 都没在说话,组件开一个"通知轮",responder 直接把结果告诉用户。这一轮没有用户的话,用负数 utterance id(-1、-2…),用户那一栏记"（用户没说话）"。
+- **顺带说**:任务结束时有人在说话,就不插嘴。responder 每一轮的输入前面都带一块任务板(标成【资料】:正在查的、刚查到还没说的、最近 3 条已经说过的),结果跟下一次回复一起说出去;说过的留着,用户追问细节时直接用,不用再查。
+- 一次回复完整生成完,它看到的那些结果才算"已告诉用户";回复被打断,结果留在任务板上,下次再说。
+- **像自己查到的**:用户不该听到"后台任务有结果了"。所以任务板叫【资料】、通知轮的用户消息只是"（用户没说话）",提示词也禁止提后台、任务、系统;responder 说"查到了,……",挑具体信息讲。
+
+**两种生命周期分开**:用户插话打断只取消正在生成的这一轮回复,后台任务照跑;只有 `cancel_task` 或会话结束才会取消任务。通知轮正在播放时用户开口,组件会自己打断它(aggregator 只认识用户的轮次)。
+
+**对话历史**:仍然只记用户听到的话。responder 的工具调用不进历史,任务状态每一轮通过任务板重新给;thinker 拿到的对话记录也是这一份。
+
+**在页面上看**:任务每有变化(委派、thinker 调了一个工具、工具返回、查完、说给用户、取消),组件都会发一个 `TasksFrame`,带上所有任务和每一步,WebRTC transport 和 `ConversationFrame` 一样转给页面。"快答慢想"模式下页面多一块"后台 · THINKER":每个任务一张卡片,实时显示它在搜什么(SEARCH)、读哪一页(READ)、用了多久,查完展开资料,说给你之后变绿。thinker 的每一步来自 `agent.iter()` 的节点,不需要模型支持流式。
+
+用法:WebRTC 页面选"快答慢想",或者 `STFRComponent(model=..., thinker_model=..., max_tasks=5, thinker_tools=[...])`。
+
+**pydantic-ai 的坑**:sync 工具会被放进线程里执行,那里起不了 asyncio 任务,所以 responder 的工具都是 `async`;`run_stream` 会丢掉工具调用之后模型说的话,要用 `run_stream_events`。有的模型(Gemma)在工具返回后会把前面说过的话重说一遍,`Responder.stream` 会把重复的开头去掉。
+
+### STT(`app/plugins/stt/`)
+
+- **整句 STT**(`VADAccumulator` + `Qwen3STTComponent`):VAD 按 Silero 的状态把音频攒成一整句,再交给 Qwen3 识别。VAD 会额外保留说话前 0.3 秒的音频(`pre_roll_secs`),不然第一个字会被切掉("闭嘴"会被识别成"嘴")。
+- **流式 STT**(`TencentSTTComponent`):一个组件替代上面两个。持续推流给腾讯,自己维护音频时钟和最近 60 秒的音频;收到中间结果发 `InterimTextFrame`,收到最终结果就按服务端时间戳从本地缓冲切出音频,发 `TextAudioFrame`;同时发用户开口/停口事件。连接断了在下一块音频到达时自动重连。协议部分单独放在 `tencent_stt.py`。
+
+两种方式输出的都是 `TextAudioFrame`,下游不用关心用的是哪一种。
+
+## 自定义 STT / TTS / LLM
+
+STT 和 TTS 组件只依赖几个方法(鸭子类型),不关心具体模型。要换成自己的服务,让大模型照着现有插件写一个类,再传给组件即可。
+
+**整句 STT 插件需要提供:**
+
+```python
+class MySTT:
+    sample_rate = 16000                       # 输入采样率
+
+    async def transcribe(self, audio: bytes) -> str:
+        """audio 是一整句话:16 kHz、单声道、int16 PCM。返回识别文本。"""
+
+    async def aclose(self): ...               # 释放资源
+```
+
+**流式 STT** 的接口各家差别很大,建议参照 `tencent_stt.py`(协议)+ `TencentSTTComponent`(组件)各写一份。组件要做到:输入原始 `AudioFrame`,输出 `InterimTextFrame` 和 `TextAudioFrame`(按音频时钟填 `audio_start` / `audio_end`),并广播用户开口/停口事件。
+
+**TTS 插件需要提供:**
+
+```python
+class MyTTS:
+    @property
+    def sample_rate(self) -> int: ...         # 输出采样率,最晚在第一块音频产出后可用
+
+    async def synthesize_stream(self, text: str) -> AsyncIterator["np.ndarray"]:
+        """边合成边 yield 音频块:单声道 float32,取值范围 [-1, 1]。组件每拿到一块就发给客户端。
+        调用方可能中途放弃(被打断),要能被取消,不要在后台继续合成。"""
+
+    async def synthesize(self, text: str, output_path: str = None) -> "np.ndarray":
+        """整句合成,返回完整音频(测试接口 /test/tts 用)。可以直接拼接 synthesize_stream 的结果。"""
+
+    async def aclose(self): ...               # 释放资源,最好能尽快中断正在进行的合成
+```
+
+现有的实现可以参考:
+
+- `vol_tts.py`(火山 HTTP):每收到一行 JSON 就 yield 一块。碎块会攒到 `min_chunk_secs`(默认 0.1 秒)再发,首块不等。
+- `vol_tts2.py`(火山双向 WebSocket):一条连接跨多轮复用,文本可以分多次送进同一个会话(`open_session()`),支持取消会话;协议编解码在 `volc_protocol.py`。配套的 `VolTTS2Component` 一轮回复只开一个会话,LLM 每吐一句就送进去,不等上一句合成完。实测复用连接时首块约 0.95 秒(HTTP 版约 1.5 秒)。chatbot 里替换成 `VolTTS2Component()` 即可使用。
+- `qwen3_tts.py`(本机):推理在专用线程里跑,用 asyncio 队列把每块音频传回事件循环;调用方放弃时线程在下一块处停下。`streaming_interval` 控制每块的大约时长,越小首包越快。
+
+模型推理如果是阻塞的,放进线程里跑(参考 `qwen3_stt.py` 和 `qwen3_tts.py` 里的 `run_in_executor`),不要卡住事件循环。
+
+**组合:** 把插件实例传给组件,放进 pipeline,放在 `app/routers/` 里:
+
+```python
+Pipeline(WebsocketTransport(websocket), [
+    TencentSTTComponent(),          # 或 VADAccumulator() + Qwen3STTComponent(MySTT())
+    BargeInAggregator(),            # 或其他轮次管理
+    NaiveAgentComponent(model=open_router_model()),
+    Qwen3TTSComponent(MyTTS()),
+])
+```
+
+组件名里带 Qwen3 只是历史原因,传入任何满足上面接口的对象都可以(`VolTTSComponent` 就是默认使用 `VolTTS` 的 `Qwen3TTSComponent`)。TTS 输出的采样率如果不是 24 kHz,客户端播放时要按实际采样率播放。
+
+**让大模型写插件**,可以直接这样提问:
+
+> 参考 `project/app/plugins/tts/vol_tts.py` 和 `project/app/plugins/tts/component.py`,为 `<某个 TTS 服务或模型>` 写一个 TTS 插件类,放在 `project/app/plugins/tts/` 下。要求:提供 `sample_rate`、`async synthesize_stream(text)`(逐块 yield 单声道 float32 音频,可被取消)、`async synthesize(text, output_path=None)` 和 `async aclose()`;阻塞调用放进线程里;不要改动 component。
+
+整句 STT 同理,参考 `qwen3_stt.py` 和 `stt/component.py`,接口换成上面的 STT 版本。
+
+**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务,`mlx_llm_model()`(`plugins/llm/mlx_llm.py`)走本机 MLX 跑的 Gemma 4 E2B(需要先启动服务,见[本地 LLM](#本地-llmmlx-gemma-4-e2b));不传 `model` 时默认用 `open_router_model()`。
+
+- 翻译:`TranslatorComponent(model=open_router_model(), system_prompt="...")`。
+- 对话:`NaiveAgentComponent(model=open_router_model(), system_prompt="...")`。LLM 流式输出会按句末标点切成句子,一句一句交给 TTS;句末标点后面紧跟的右引号、右括号归到前一句,只有标点没有文字的片段不会送去合成。
+
+## 项目结构
+
+```
+project/app/
+  transport/    WebSocket 收发(ws.py,估算客户端播放进度);WebRTC 收发(webrtc.py,服务端实时播出);都发出 bot 开始 / 结束说话事件
+  static/       浏览器页面:总入口(index.html,左侧切换)、WebRTC 通话(webrtc.html)、声音复刻(voice_clone.html)
+  audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
+  plugins/
+    stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
+    llm/        翻译(translator)、对话(naive_agent)、快答慢想(stfr:responder + orchestrator + thinker);模型:OpenRouter(openrouter)、本地服务(local_llm)、本机 MLX(mlx_llm)
+    tts/        Qwen3(本机)、火山 HTTP(vol_tts)、火山双向 WebSocket(vol_tts2 + volc_protocol)
+    turn/       轮次管理:半双工、"闭嘴"、smart turn、插话打断;docs/ 里有图解说明
+  pipeline/     组件基类和 Pipeline
+  metrics/      每轮延迟拆解(latency.py):说完 → 听到第一个字
+  context/      对话上下文(conversation.py):只记用户实际听到的回复
+  control/      会话级控制总线(停止、打断、用户/bot 说话状态等事件)
+  frame/        数据帧和事件定义
+  routers/      WebSocket 接口
+project/scripts/
+  translate_file.py         实时翻译示例:发送中文 wav,保存英文语音(依赖少,可以直接给别人用)
+  voice_changer_client.py   发送 wav 文件的测试客户端
+  voice_changer_mic.py      麦克风客户端(translator / voice_changer)
+  chatbot_mic.py            麦克风客户端(chatbot,支持打断)
+project/tests/              测试(python -m pytest)
+```
+
+## 已知问题
+
+- **播放结束时间是服务端估算的**:客户端缓冲很深时,可以调大 `TransportOutput` 的 `playback_margin_secs`。要精确的话,可以让客户端播完后回传事件。
+- **对话历史上限是按轮数算的**:默认最多 50 轮(`ConversationContext(max_turns=...)`),没有按 token 数控制;单轮很长时可以调小。
