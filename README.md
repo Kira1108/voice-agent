@@ -287,7 +287,7 @@ samples/                # 界面截图与会话录音
 bash_scripts/           # 本地 LLM 启动及模型复制脚本
 ```
 
-进一步阅读：[对话上下文](./voice_agent/app/context/README.md) · [控制总线](./voice_agent/app/control/README.md) · [TTS](./voice_agent/app/plugins/tts/README.md)
+进一步阅读：[对话上下文](./voice_agent/app/context/README.md) · [控制总线](./voice_agent/app/control/README.md) · [帧](./voice_agent/app/frame/README.md) · [TTS](./voice_agent/app/plugins/tts/README.md)
 
 ## 扩展与测试
 
